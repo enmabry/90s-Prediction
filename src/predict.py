@@ -8,114 +8,109 @@ def predict_final_boss():
     # 1. Carga de recursos
     try:
         df = pd.read_csv('data/dataset_final.csv')
+        # Asegurarse de que la fecha sea datetime para ordenar bien
+        df['Date'] = pd.to_datetime(df['Date']) 
+        
         m_res = joblib.load('models/result_model.pkl')
         m_corn = joblib.load('models/corners_model.pkl')
         m_shots = joblib.load('models/shots_total_model.pkl')
         m_target = joblib.load('models/shots_target_model.pkl')
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Error cargando recursos: {e}")
         return
 
     print("\n" + "═"*55)
-    print("      SISTEMA DE PREDICCIÓN CONTEXTUAL V1.0")
+    print("      SISTEMA DE PREDICCIÓN CONTEXTUAL V2.0")
     print("═"*55)
     
-    # --- AYUDA PARA EL USUARIO ---
-    print("\n[?] ¿No sabes el nombre exacto? Escribe una parte del nombre para buscarlo.")
-    busqueda = input("Buscar equipo (o pulsa Enter para saltar): ").strip()
+    # --- BUSCADOR REPARADO ---
+    busqueda = input("\nBuscar equipo (o Enter para saltar): ").strip()
     if busqueda:
-        coincidencias = df[df['HomeTeam'].str.contains(busqueda, case=False, na=False)]['HomeTeam'].unique().tolist()
-        if coincidencias:
-            print(f"Equipos encontrados: {', '.join(coincidencias)}")
-        else:
-            print(f"No se encontraron equipos con '{busqueda}'")
-    # -----------------------------
-    
-    local = input("Local: ")
-    visitante = input("Visitante: ")
+        todos = pd.concat([df['HomeTeam'], df['AwayTeam']]).unique()
+        coincidencias = [e for e in todos if busqueda.lower() in str(e).lower()]
+        print(f"Coincidencias: {', '.join(coincidencias)}")
+
+    local = input("\nNombre Local: ")
+    visitante = input("Nombre Visitante: ")
     h, d, a = float(input("Cuota 1: ")), float(input("Cuota X: ")), float(input("Cuota 2: "))
 
-    # 2. Localizar registros
-    h_row = df[(df['HomeTeam']==local) | (df['AwayTeam']==local)].sort_values('Date').iloc[-1]
-    a_row = df[(df['HomeTeam']==visitante) | (df['AwayTeam']==visitante)].sort_values('Date').iloc[-1]
-    
+    # 2. LOCALIZACIÓN POR ROL (CAMBIO CLAVE)
+    # Buscamos la última vez que el LOCAL jugó en CASA y el VISITANTE fuera
+    try:
+        h_row = df[df['HomeTeam'] == local].sort_values('Date').iloc[-1]
+        a_row = df[df['AwayTeam'] == visitante].sort_values('Date').iloc[-1]
+    except Exception:
+        print("Error: No se encontraron datos para esos equipos en esos roles.")
+        return
+
     model_features = m_res.feature_names_in_
     input_dict = {}
 
-    def get_val(row, base_name):
-        # Busca cualquier columna que contenga el nombre base
-        for col in row.index:
-            if base_name in col:
-                return row[col]
-        return 0.0
-
+    # 3. CONSTRUCCIÓN DEL VECTOR (Compatible con el nuevo Preprocessor)
+    sum_inv = (1/h) + (1/d) + (1/a) # Para Market Prob
+    
     for col in model_features:
-        # Extraer métrica base (ej: rolling_Shots_5)
-        base = col.replace('_Home', '').replace('_Away', '').replace('_Vs', '')
+        # A. Probabilidades de Mercado (Nuevas en el Train)
+        if 'Market_Prob' in col:
+            if '_H' in col: input_dict[col] = (1/h) / sum_inv
+            elif '_D' in col: input_dict[col] = (1/d) / sum_inv
+            elif '_A' in col: input_dict[col] = (1/a) / sum_inv
         
-        if '_Home' in col:
-            # Si es 'Vs', necesitamos la defensa del VISITANTE para el ataque del LOCAL
-            source = a_row if '_Vs' in col else h_row
-            input_dict[col] = get_val(source, base)
+        # B. Cuotas puras
+        elif 'AvgH' in col: input_dict[col] = h
+        elif 'AvgD' in col: input_dict[col] = d
+        elif 'AvgA' in col: input_dict[col] = a
+        elif 'Odds_Std' in col: input_dict[col] = np.std([h, d, a])
+
+        # C. Datos de Local (Home) y Visitante (Away)
+        elif '_Home' in col:
+            # Si la columna existe en h_row (incluyendo las nuevas _Role y _Opp)
+            input_dict[col] = h_row.get(col, 0)
         elif '_Away' in col:
-            # Si es 'Vs', necesitamos la defensa del LOCAL para el ataque del VISITANTE
-            source = h_row if '_Vs' in col else a_row
-            input_dict[col] = get_val(source, base)
+            input_dict[col] = a_row[col] if col in a_row else 0
+            
+        # D. Diferencias y totales (diff_ / exp_)
+        elif 'diff_' in col or 'exp_' in col:
+            # Intentamos obtener el valor calculado en el preprocessor del local
+            input_dict[col] = h_row.get(col, 0)
         else:
-            # Cuotas y especiales
-            if col == 'AvgH': input_dict[col] = h
-            elif col == 'AvgD': input_dict[col] = d
-            elif col == 'AvgA': input_dict[col] = a
-            elif 'diff_Shots' in col:
-                s_h = get_val(h_row, 'rolling_Shots_5')
-                s_a = get_val(a_row, 'rolling_Shots_5')
-                input_dict[col] = s_h - s_a
-            elif 'exp_Total_Corners' in col:
-                c_h = get_val(h_row, 'rolling_Corners_5')
-                c_a = get_val(a_row, 'rolling_Corners_5')
-                input_dict[col] = c_h + c_a
-            else:
-                input_dict[col] = 0.0
+            input_dict[col] = 0.0
 
     X_in = pd.DataFrame([input_dict])[model_features]
 
-    # 3. Predicciones
+    # 4. PREDICCIONES
     prob_1x2 = m_res.predict_proba(X_in)[0]
     mu_c = m_corn.predict(X_in)[0]
     mu_s = m_shots.predict(X_in)[0]
     mu_t = m_target.predict(X_in)[0]
     
-    # 4. Desglose con "Shares"
-    # Buscamos el ratio de participación en corners y tiros
-    c_h = get_val(h_row, 'rolling_Corner_Share_5')
-    c_a = get_val(a_row, 'rolling_Corner_Share_5')
-    c_ratio = c_h / (c_h + c_a) if (c_h + c_a) > 0 else 0.5
-    
-    s_h = get_val(h_row, 'rolling_Shot_Share_5')
-    s_a = get_val(a_row, 'rolling_Shot_Share_5')
-    s_ratio = s_h / (s_h + s_a) if (s_h + s_a) > 0 else 0.5
+    # 5. REPARTO DINÁMICO (Usando los nuevos Shares del Preprocessor)
+    # Tomamos el share del local en su último partido en casa
+    share_c = h_row.get('Corner_Share_Home', 0.5)
+    share_s = h_row.get('Shot_Share_Home', 0.5)
     
     def get_p(mu, line): return (1 - poisson.cdf(line, mu)) * 100
 
-    # 5. Reporte Visual
+    # 6. REPORTE VISUAL V2
     print("\n" + "╔" + "═"*55 + "╗")
     print(f"║ ⚽ {local.upper()} vs {visitante.upper()} ".ljust(56) + "║")
     print("╠" + "═"*55 + "╣")
     print(f"║ 1X2: L:{prob_1x2[0]*100:.1f}% | X:{prob_1x2[1]*100:.1f}% | V:{prob_1x2[2]*100:.1f}% ".ljust(56) + "║")
     print("╠" + "═"*55 + "╣")
     
-    # Equipos y sus Lambdas desglosados
+    # Cálculos individuales
+    # Local: mu * share | Visitante: mu * (1 - share)
     data = [
-        (local, mu_c * c_ratio, mu_s * s_ratio, mu_t * s_ratio),
-        (visitante, mu_c * (1-c_ratio), mu_s * (1-s_ratio), mu_t * (1-s_ratio))
+        (f"🏠 {local}", mu_c * share_c, mu_s * share_s, mu_t * share_s, 4.5, 11.5, 4.5),
+        (f"🚌 {visitante}", mu_c * (1-share_c), mu_s * (1-share_s), mu_t * (1-share_s), 3.5, 9.5, 3.5)
     ]
 
-    for name, cm, sm, tm in data:
+    for i, (name, cm, sm, tm, l_c, l_s, l_t) in enumerate(data):
         print(f"║ 📊 {name.upper()}")
-        print(f"║    CORNERS (Est: {cm:.1f}) -> +3.5: {get_p(cm, 3.5):.1f}% | +5.5: {get_p(cm, 5.5):.1f}%")
-        print(f"║    TIROS   (Est: {sm:.1f}) -> +10.5: {get_p(sm, 10.5):.1f}% | +13.5: {get_p(sm, 13.5):.1f}%")
-        print(f"║    A PUERTA(Est: {tm:.1f}) -> +3.5: {get_p(tm, 3.5):.1f}% | +5.5: {get_p(tm, 5.5):.1f}%")
-        if name == local: print("╟" + "─"*55 + "╢")
+        print(f"║    CORNERS (Est: {cm:.1f}) -> +{l_c}: {get_p(cm, l_c):.1f}%")
+        print(f"║    TIROS   (Est: {sm:.1f}) -> +{l_s}: {get_p(sm, l_s):.1f}%")
+        print(f"║    A PUERTA(Est: {tm:.1f}) -> +{l_t}: {get_p(tm, l_t):.1f}%")
+        if i == 0: print("╟" + "─"*55 + "╢")
     print("╚" + "═"*55 + "╝")
 
 if __name__ == "__main__":
