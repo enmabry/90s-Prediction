@@ -1,0 +1,5 @@
+pandas         # Manejo de tablas (Dataframes)
+numpy          # Cálculos matemáticos
+scikit-learn   # Modelos base y métricas
+xgboost        # El modelo "pesado" para predicción
+matplotlib     # Para ver gráficas de acierto

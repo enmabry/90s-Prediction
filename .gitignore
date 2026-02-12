@@ -1,0 +1,28 @@
+# Ignorar carpeta de datos (archivos grandes)
+data/
+
+# Ignorar archivos de entorno virtual
+.venv/
+venv/
+env/
+
+# Ignorar archivos de caché de Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+
+# Ignorar archivos de desarrollo
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Ignorar modelos entrenados (opcional, descomenta si quieres ignorarlos)
+# models/
+
+# Ignorar notebooks temporales
+.ipynb_checkpoints/
