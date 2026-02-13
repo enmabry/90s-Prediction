@@ -4,6 +4,46 @@ import os
 import numpy as np
 from scipy.stats import poisson
 
+def calcular_kelly(prob_ia, cuota, banca_total=100, instabilidad=0):
+    """
+    Calcula el monto recomendado usando la fórmula de Kelly Fraccionario.
+    
+    Args:
+        prob_ia (float): Probabilidad estimada por IA (valor entre 0 y 1, ej: 0.62)
+        cuota (float): Cuota decimal (ej: 1.85)
+        banca_total (float): Capital total disponible (default: 100)
+        instabilidad (float): Índice de inestabilidad del equipo (0-2, default: 0)
+    
+    Returns:
+        float: Monto recomendado para apostar (ajustado por inestabilidad)
+    """
+    # prob_ia: valor entre 0 y 1 (ej: 0.62)
+    # cuota: cuota decimal (ej: 1.85)
+    # instabilidad: ratio de desv.estándar/media (equipos impredecibles tienen valores altos)
+    
+    if cuota <= 1:
+        return 0
+    
+    p = prob_ia
+    q = 1 - p
+    b = cuota - 1
+    
+    # Fórmula de Kelly: (bp - q) / b
+    f_star = (b * p - q) / b
+    
+    # Aplicamos Kelly Fraccionario (1/4) para reducir volatilidad
+    f_frac = f_star * 0.25
+    
+    if f_frac < 0:
+        return 0  # No hay valor
+    
+    # AJUSTE POR INESTABILIDAD: equipos más volátiles = menor apuesta
+    # Si instabilidad > 1, el equipo es muy impredecible
+    stability_factor = 1 / (1 + instabilidad * 0.5)  # Factor entre 0.33 y 1
+    
+    monto_recom = banca_total * f_frac * stability_factor
+    return monto_recom
+
 def predict_final_boss():
     # 1. Carga de recursos
     try:
@@ -101,15 +141,26 @@ def predict_final_boss():
     # Cálculos individuales
     # Local: mu * share | Visitante: mu * (1 - share)
     data = [
-        (f"🏠 {local}", mu_c * share_c, mu_s * share_s, mu_t * share_s, 4.5, 11.5, 4.5),
-        (f"🚌 {visitante}", mu_c * (1-share_c), mu_s * (1-share_s), mu_t * (1-share_s), 3.5, 9.5, 3.5)
+        (f"🏠 {local}", mu_c * share_c, mu_s * share_s, mu_t * share_s, 4.5, 11.5, 4.5, h, h_row),
+        (f"🚌 {visitante}", mu_c * (1-share_c), mu_s * (1-share_s), mu_t * (1-share_s), 3.5, 9.5, 3.5, a, a_row)
     ]
 
-    for i, (name, cm, sm, tm, l_c, l_s, l_t) in enumerate(data):
+    for i, (name, cm, sm, tm, l_c, l_s, l_t, cuota_mercado, row_data) in enumerate(data):
         print(f"║ 📊 {name.upper()}")
         print(f"║    CORNERS (Est: {cm:.1f}) -> +{l_c}: {get_p(cm, l_c):.1f}%")
         print(f"║    TIROS   (Est: {sm:.1f}) -> +{l_s}: {get_p(sm, l_s):.1f}%")
         print(f"║    A PUERTA(Est: {tm:.1f}) -> +{l_t}: {get_p(tm, l_t):.1f}%")
+        
+        # Cálculo de Kelly para Corners (con factor de inestabilidad)
+        prob_ia_decimal = get_p(cm, l_c) / 100
+        instabilidad = row_data.get('avg_instability_Home' if i == 0 else 'avg_instability_Away', 0)
+        instabilidad = float(instabilidad) if pd.notna(instabilidad) else 0
+        
+        recomendacion = calcular_kelly(prob_ia_decimal, cuota_mercado, instabilidad=instabilidad)
+        
+        if recomendacion > 0:
+            print(f"║ 💰 VALUE DETECTADO: Apostar {recomendacion:.2f}€ (inestabilidad: {instabilidad:.2f})")
+        
         if i == 0: print("╟" + "─"*55 + "╢")
     print("╚" + "═"*55 + "╝")
 

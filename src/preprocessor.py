@@ -23,7 +23,7 @@ def get_rolling_stats(df, n_games=5):
 
     combined = pd.concat([home_stats, away_stats]).sort_values(['Team', 'Date'])
 
-    # --- PASO 2: CALCULAR MEDIAS MÓVILES ---
+    # --- PASO 2: CALCULAR MEDIAS MÓVILES Y DESVIACIÓN ESTÁNDAR ---
     features = ['S', 'ST', 'C', 'OppS', 'OppST', 'OppC']
     
     # A. Medias Generales (Forma reciente total)
@@ -32,11 +32,24 @@ def get_rolling_stats(df, n_games=5):
             lambda x: x.rolling(window=n_games, min_periods=1).mean().shift(1)
         )
     
-    # B. Medias por ROL (Solo Local o Solo Visitante)
+    # B. Desviación Estándar Móvil (Inestabilidad)
+    # Captura cuán impredecible es un equipo (varianza en sus últimos n_games)
+    for f in features:
+        combined[f'std_{f}_{n_games}'] = combined.groupby('Team')[f].transform(
+            lambda x: x.rolling(window=n_games, min_periods=1).std().shift(1)
+        )
+    
+    # C. Medias por ROL (Solo Local o Solo Visitante)
     # Esto captura si el equipo se comporta diferente en casa o fuera
     for f in features:
         combined[f'rolling_{f}_{n_games}_Role'] = combined.groupby(['Team', 'IsHome'])[f].transform(
             lambda x: x.rolling(window=n_games, min_periods=1).mean().shift(1)
+        )
+    
+    # D. Desviación Estándar por ROL (Inestabilidad en casa vs fuera)
+    for f in features:
+        combined[f'std_{f}_{n_games}_Role'] = combined.groupby(['Team', 'IsHome'])[f].transform(
+            lambda x: x.rolling(window=n_games, min_periods=1).std().shift(1)
         )
 
     # --- PASO 3: REINTEGRAR AL DATAFRAME ORIGINAL ---
@@ -55,6 +68,18 @@ def get_rolling_stats(df, n_games=5):
     # Corner Share: Qué porcentaje de corners suele aportar cada equipo
     df['Corner_Share_Home'] = df[f'rolling_C_{n_games}_Home'] / (df[f'rolling_C_{n_games}_Home'] + df[f'rolling_C_{n_games}_Away']).replace(0, 1)
     df['Shot_Share_Home'] = df[f'rolling_S_{n_games}_Home'] / (df[f'rolling_S_{n_games}_Home'] + df[f'rolling_S_{n_games}_Away']).replace(0, 1)
+    
+    # --- INESTABILIDAD (VARIANZA INDIVIDUAL) ---
+    # Ratio de Inestabilidad: Desviación Estándar / Media (Coeficiente de Variación)
+    # Si es alto, el equipo es impredecible
+    df['instability_C_Home'] = df[f'std_C_{n_games}_Home'] / (df[f'rolling_C_{n_games}_Home'] + 0.1)  # +0.1 para evitar división por 0
+    df['instability_C_Away'] = df[f'std_C_{n_games}_Away'] / (df[f'rolling_C_{n_games}_Away'] + 0.1)
+    df['instability_S_Home'] = df[f'std_S_{n_games}_Home'] / (df[f'rolling_S_{n_games}_Home'] + 0.1)
+    df['instability_S_Away'] = df[f'std_S_{n_games}_Away'] / (df[f'rolling_S_{n_games}_Away'] + 0.1)
+    
+    # Inestabilidad promedio general (combinada)
+    df['avg_instability_Home'] = (df['instability_C_Home'] + df['instability_S_Home']) / 2
+    df['avg_instability_Away'] = (df['instability_C_Away'] + df['instability_S_Away']) / 2
     
     # Probabilidades Implícitas de las cuotas
     sum_inv = (1/df['AvgH']) + (1/df['AvgD']) + (1/df['AvgA'])
