@@ -3,3 +3,7 @@ numpy          # Cálculos matemáticos
 scikit-learn   # Modelos base y métricas
 xgboost        # El modelo "pesado" para predicción
 matplotlib     # Para ver gráficas de acierto
+scipy          # Funciones estadísticas (Poisson)
+openpyxl       # Exportar a Excel
+rich           # Interfaz profesional de consola
+joblib         # Persistencia de modelos

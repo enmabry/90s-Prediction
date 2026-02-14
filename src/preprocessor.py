@@ -7,10 +7,109 @@ from pandas.errors import PerformanceWarning
 
 warnings.simplefilter(action='ignore', category=PerformanceWarning)
 
+def calculate_dynamic_standings(df):
+    """
+    Calcula la tabla clasificatoria dinámica para cada fecha y LIGA (CONSCIENTE DE RESULTADOS).
+    Reconstruye la tabla después de cada jornada usando:
+    - Puntos: 3 victoria, 1 empate, 0 derrota
+    - Diferencia de goles
+    - Goles a favor
+    
+    Args:
+        df: DataFrame con columnas Date, HomeTeam, AwayTeam, FTHG, FTAG, FTR, Div
+    
+    Returns:
+        dict: Para cada (fecha, liga, equipo) -> {'position': int, 'points': int, 'gd': int}
+    """
+    standings_dict = {}
+    
+    # Ordenar por fecha para procesar cronológicamente
+    df_sorted = df.sort_values('Date').copy()
+    df_sorted['Date'] = pd.to_datetime(df_sorted['Date'])
+    dates = sorted(df_sorted['Date'].unique())
+    ligas = df_sorted['Div'].unique()
+    
+    # Crear stats por liga
+    team_stats_by_league = {liga: {} for liga in ligas}
+    
+    for date in dates:
+        matches_today = df_sorted[df_sorted['Date'] == date]
+        
+        # Procesar cada partido de hoy
+        for _, match in matches_today.iterrows():
+            home = match['HomeTeam']
+            away = match['AwayTeam']
+            liga = match['Div']
+            
+            team_stats = team_stats_by_league[liga]
+            
+            # Inicializar si no existen en esta liga
+            if home not in team_stats:
+                team_stats[home] = {'points': 0, 'played': 0, 'gf': 0, 'ga': 0}
+            if away not in team_stats:
+                team_stats[away] = {'points': 0, 'played': 0, 'gf': 0, 'ga': 0}
+            
+            # Obtener resultado (validar NaN)
+            try:
+                fthg = int(match['FTHG']) if pd.notna(match['FTHG']) else 0
+                ftag = int(match['FTAG']) if pd.notna(match['FTAG']) else 0
+                ftr = match['FTR'] if pd.notna(match['FTR']) else 'D'
+            except:
+                continue
+            
+            # Actualizar goles
+            team_stats[home]['gf'] += fthg
+            team_stats[home]['ga'] += ftag
+            team_stats[home]['played'] += 1
+            
+            team_stats[away]['gf'] += ftag
+            team_stats[away]['ga'] += fthg
+            team_stats[away]['played'] += 1
+            
+            # Asignar puntos según resultado (3-1-0)
+            if ftr == 'H':  # Home win
+                team_stats[home]['points'] += 3
+            elif ftr == 'A':  # Away win
+                team_stats[away]['points'] += 3
+            elif ftr == 'D':  # Draw
+                team_stats[home]['points'] += 1
+                team_stats[away]['points'] += 1
+        
+        # Calcular tabla para CADA LIGA
+        for liga in ligas:
+            team_stats = team_stats_by_league[liga]
+            
+            # Calcular tabla ordenada por:
+            # 1. Puntos (descendente)
+            # 2. Diferencia de goles (descendente)
+            # 3. Goles a favor (descendente)
+            standings = sorted(
+                [
+                    (team, stats['points'], stats['gf'] - stats['ga'], stats['gf'])
+                    for team, stats in team_stats.items()
+                ],
+                key=lambda x: (-x[1], -x[2], -x[3])  # Puntos, GD, GF
+            )
+            
+            # Guardar standings para esta fecha y liga
+            for position, (team, points, gd, gf) in enumerate(standings, 1):
+                standings_dict[(date, liga, team)] = {
+                    'position': position,
+                    'points': points,
+                    'gd': gd,
+                    'gf': gf
+                }
+    
+    return standings_dict
+
 def get_rolling_stats(df, n_games=5):
     # Definimos las métricas base
     # Ofensivas: Tiros (S), Tiros a Puerta (ST), Corners (C)
     # Defensivas: Tiros Recibidos (OppS), Tiros a Puerta Recibidos (OppST), Corners Recibidos (OppC)
+    
+    # --- PASO 0: CALCULAR STANDINGS (ANTES DE PERDER Div) ---
+    # Hacer esto primero para que Div siga presente en el dataframe
+    standings = calculate_dynamic_standings(df)
     
     # --- PASO 1: CREAR REGISTROS INDIVIDUALES POR EQUIPO ---
     home_stats = df[['Date', 'HomeTeam', 'HS', 'HST', 'HC', 'AS', 'AST', 'AC']].copy()
@@ -23,27 +122,29 @@ def get_rolling_stats(df, n_games=5):
 
     combined = pd.concat([home_stats, away_stats]).sort_values(['Team', 'Date'])
 
-    # --- PASO 2: CALCULAR MEDIAS MÓVILES Y DESVIACIÓN ESTÁNDAR ---
+    # --- PASO 2: MEDIAS PONDERADAS EXPONENCIALES (EWM) - HYBRID MEMORY ---
+    # EWM (Exponential Weighted Moving Average) da MÁS peso a los partidos recientes
+    # pero CONSERVA la memoria histórica (no la olvida como rolling())
+    # span=n_games: define qué tan rápido "olvida" el pasado lejano
     features = ['S', 'ST', 'C', 'OppS', 'OppST', 'OppC']
     
-    # A. Medias Generales (Forma reciente total)
+    # A. Media Exponencial General (Forma reciente con memoria histórica)
     for f in features:
         combined[f'rolling_{f}_{n_games}'] = combined.groupby('Team')[f].transform(
-            lambda x: x.rolling(window=n_games, min_periods=1).mean().shift(1)
+            lambda x: x.ewm(span=n_games, adjust=False).mean().shift(1)
         )
     
-    # B. Desviación Estándar Móvil (Inestabilidad)
-    # Captura cuán impredecible es un equipo (varianza en sus últimos n_games)
+    # B. Desviación Estándar Móvil (Inestabilidad) - Sigue siendo rolling
+    # porque EWM no tiene std incorporado de forma eficiente
     for f in features:
         combined[f'std_{f}_{n_games}'] = combined.groupby('Team')[f].transform(
             lambda x: x.rolling(window=n_games, min_periods=1).std().shift(1)
         )
     
-    # C. Medias por ROL (Solo Local o Solo Visitante)
-    # Esto captura si el equipo se comporta diferente en casa o fuera
+    # C. Media Exponencial por ROL (Local/Visitante con memoria)
     for f in features:
         combined[f'rolling_{f}_{n_games}_Role'] = combined.groupby(['Team', 'IsHome'])[f].transform(
-            lambda x: x.rolling(window=n_games, min_periods=1).mean().shift(1)
+            lambda x: x.ewm(span=n_games, adjust=False).mean().shift(1)
         )
     
     # D. Desviación Estándar por ROL (Inestabilidad en casa vs fuera)
@@ -81,6 +182,35 @@ def get_rolling_stats(df, n_games=5):
     df['avg_instability_Home'] = (df['instability_C_Home'] + df['instability_S_Home']) / 2
     df['avg_instability_Away'] = (df['instability_C_Away'] + df['instability_S_Away']) / 2
     
+    # --- STRENGTH OF SCHEDULE (SOS) - Tabla Clasificatoria Dinámica POR LIGA ---
+    # Usa standings calculados al inicio (PASO 0)
+    # Calcula la posición y puntos del rival en cada fecha y liga
+    
+    df['opponent_position_home'] = df.apply(
+        lambda row: standings.get((row['Date'], row['Div'], row['AwayTeam']), {}).get('position', 10),
+        axis=1
+    )
+    df['opponent_points_home'] = df.apply(
+        lambda row: standings.get((row['Date'], row['Div'], row['AwayTeam']), {}).get('points', 0),
+        axis=1
+    )
+    df['opponent_gd_home'] = df.apply(
+        lambda row: standings.get((row['Date'], row['Div'], row['AwayTeam']), {}).get('gd', 0),
+        axis=1
+    )
+    df['opponent_position_away'] = df.apply(
+        lambda row: standings.get((row['Date'], row['Div'], row['HomeTeam']), {}).get('position', 10),
+        axis=1
+    )
+    df['opponent_points_away'] = df.apply(
+        lambda row: standings.get((row['Date'], row['Div'], row['HomeTeam']), {}).get('points', 0),
+        axis=1
+    )
+    df['opponent_gd_away'] = df.apply(
+        lambda row: standings.get((row['Date'], row['Div'], row['HomeTeam']), {}).get('gd', 0),
+        axis=1
+    )
+    
     # Probabilidades Implícitas de las cuotas
     sum_inv = (1/df['AvgH']) + (1/df['AvgD']) + (1/df['AvgA'])
     df['Market_Prob_H'] = (1/df['AvgH']) / sum_inv
@@ -92,17 +222,46 @@ def get_rolling_stats(df, n_games=5):
 
 if __name__ == "__main__":
     path = os.path.join('data', '**', '*.csv')
+    # CARGAR TODO para MEMORIA HISTÓRICA + EWM para SENSIBILIDAD ACTUAL
+    # No filtramos por 25-26 porque queremos que el modelo vea:
+    # - 3800+ partidos para entender patrones generales del fútbol
+    # - EWM automáticamente ponderará MÁS los recientes, menos los antiguos
     files = [f for f in glob.glob(path, recursive=True) if 'dataset_final.csv' not in f]
+    
+    print(f"[DATA] Cargando dataset completo (MEMORIA + EWM):")
+    print(f"   Total de archivos: {len(files)}")
     
     df_list = []
     for f in files:
         temp = pd.read_csv(f, encoding='unicode_escape')
         temp['Date'] = pd.to_datetime(temp['Date'], dayfirst=True, errors='coerce')
+        
+        # Si no existe Div, crearlo basándose en el nombre del archivo
+        if 'Div' not in temp.columns:
+            if 'Bundesliga' in f:
+                temp['Div'] = 'D1'
+            elif 'LaLiga' in f:
+                temp['Div'] = 'SP1'
+            else:
+                temp['Div'] = 'Unknown'
+        
         df_list.append(temp)
     
     full_df = pd.concat(df_list).dropna(subset=['Date', 'HomeTeam', 'AwayTeam'])
     final_data = get_rolling_stats(full_df.sort_values('Date'))
     
+    # --- FACTOR DE TEMPORADA (Recencia) ---
+    # Añadimos columnas que indiquen cuán reciente es cada dato
+    max_date = final_data['Date'].max()
+    final_data['days_since_match'] = (max_date - final_data['Date']).dt.days
+    
+    # Weight exponencial: partidos de hoy = 1.0, partidos de hace 3 años ≈ 0.1
+    # Esto ayuda al modelo a entender: "Los datos recientes son más relevantes"
+    final_data['temporal_weight'] = np.exp(-final_data['days_since_match'] / 365)
+    
     # Limpieza de seguridad para el entrenamiento
     final_data.dropna(subset=['AvgH', 'HC', 'HS']).to_csv('data/dataset_final.csv', index=False)
-    print(f"Dataset Multi-Liga generado: {len(final_data)} partidos.")
+    print(f"[OK] Dataset Multi-Año (EWM + Peso Temporal) generado:")
+    print(f"   Total partidos: {len(final_data)}")
+    print(f"   Rango: {final_data['Date'].min().date()} a {final_data['Date'].max().date()}")
+    print(f"   Equipos: {final_data['HomeTeam'].nunique()} unicos")

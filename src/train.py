@@ -11,12 +11,36 @@ def train_dynamic_brain():
     # Limpieza estricta de NaNs para evitar errores de XGBoost
     df = df.dropna(subset=['HC', 'AC', 'HS', 'AS', 'HST', 'AST', 'FTR', 'AvgH'])
     
-    # SELECCIÓN AVANZADA: Ahora incluimos las probabilidades del mercado
-    features = [c for c in df.columns if 'rolling_' in c or 'diff_' in c or 'exp_' in c]
+    # SELECCIÓN AVANZADA: Features del modelo
+    # 1. Medias móviles exponenciales (forma del equipo)
+    features = [c for c in df.columns if 'rolling_' in c]
+    
+    # 2. Inestabilidad (desviación estándar)
+    features += [c for c in df.columns if 'instability_' in c or 'std_' in c]
+    
+    # 3. Diferencias y expectativas
+    features += [c for c in df.columns if 'diff_' in c or 'exp_' in c or 'Share' in c]
+    
+    # 4. Probabilidades de mercado y cuotas
     features += ['AvgH', 'AvgD', 'AvgA', 'Market_Prob_H', 'Market_Prob_D', 'Market_Prob_A', 'Odds_Std']
     
-    # Eliminar duplicados si los hubiera por error de lógica
+    # 5. STRENGTH OF SCHEDULE - Posición y forma del rival (¡CLAVE!)
+    features += [c for c in df.columns if 'opponent_' in c]
+    
+    # 6. Factor de recencia temporal
+    features += ['temporal_weight']
+    
+    # Filtrar solo columnas que realmente existen
+    features = [f for f in features if f in df.columns]
+    # Eliminar duplicados
     features = list(set(features))
+    
+    print(f"[MODEL] Modelo entrenado con {len(features)} features:")
+    print(f"   - Forma (rolling): {len([f for f in features if 'rolling_' in f])}")
+    print(f"   - Inestabilidad: {len([f for f in features if 'instability_' in f or 'std_' in f])}")
+    print(f"   - SOS (opponent): {len([f for f in features if 'opponent_' in f])}")
+    print(f"   - Mercado: {len([f for f in features if 'Market_' in f or 'Odds_' in f])}")
+    
     X = df[features]
 
     # --- CONFIGURACIÓN DE MODELO MÁS PROFUNDO ---

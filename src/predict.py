@@ -1,8 +1,10 @@
 import pandas as pd
 import joblib
 import os
+import sys
 import numpy as np
 from scipy.stats import poisson
+from logger import PredictionLogger
 
 def calcular_kelly(prob_ia, cuota, banca_total=100, instabilidad=0):
     """
@@ -44,7 +46,17 @@ def calcular_kelly(prob_ia, cuota, banca_total=100, instabilidad=0):
     monto_recom = banca_total * f_frac * stability_factor
     return monto_recom
 
-def predict_final_boss():
+def predict_final_boss(local=None, visitante=None, h=None, d=None, a=None):
+    """
+    Sistema de predicción contextual.
+    
+    Args:
+        local (str, optional): Nombre del equipo local
+        visitante (str, optional): Nombre del equipo visitante
+        h (float, optional): Cuota para el local
+        d (float, optional): Cuota para el empate
+        a (float, optional): Cuota para el visitante
+    """
     # 1. Carga de recursos
     try:
         df = pd.read_csv('data/dataset_final.csv')
@@ -58,21 +70,30 @@ def predict_final_boss():
     except Exception as e:
         print(f"Error cargando recursos: {e}")
         return
+    
+    # Inicializar logger
+    logger = PredictionLogger('data/prediction_log.xlsx')
 
     print("\n" + "═"*55)
     print("      SISTEMA DE PREDICCIÓN CONTEXTUAL V2.0")
     print("═"*55)
     
-    # --- BUSCADOR REPARADO ---
-    busqueda = input("\nBuscar equipo (o Enter para saltar): ").strip()
-    if busqueda:
-        todos = pd.concat([df['HomeTeam'], df['AwayTeam']]).unique()
-        coincidencias = [e for e in todos if busqueda.lower() in str(e).lower()]
-        print(f"Coincidencias: {', '.join(coincidencias)}")
+    # --- Si no recibe argumentos, los pide ---
+    if local is None or visitante is None:
+        # BUSCADOR REPARADO
+        busqueda = input("\nBuscar equipo (o Enter para saltar): ").strip()
+        if busqueda:
+            todos = pd.concat([df['HomeTeam'], df['AwayTeam']]).unique()
+            coincidencias = [e for e in todos if busqueda.lower() in str(e).lower()]
+            print(f"Coincidencias: {', '.join(coincidencias)}")
 
-    local = input("\nNombre Local: ")
-    visitante = input("Nombre Visitante: ")
-    h, d, a = float(input("Cuota 1: ")), float(input("Cuota X: ")), float(input("Cuota 2: "))
+        local = input("\nNombre Local: ") if local is None else local
+        visitante = input("Nombre Visitante: ") if visitante is None else visitante
+    
+    if h is None or d is None or a is None:
+        h = float(input("Cuota 1: ") if h is None else h)
+        d = float(input("Cuota X: ") if d is None else d)
+        a = float(input("Cuota 2: ") if a is None else a)
 
     # 2. LOCALIZACIÓN POR ROL (CAMBIO CLAVE)
     # Buscamos la última vez que el LOCAL jugó en CASA y el VISITANTE fuera
@@ -141,12 +162,12 @@ def predict_final_boss():
     # Cálculos individuales
     # Local: mu * share | Visitante: mu * (1 - share)
     data = [
-        (f"🏠 {local}", mu_c * share_c, mu_s * share_s, mu_t * share_s, 4.5, 11.5, 4.5, h, h_row),
-        (f"🚌 {visitante}", mu_c * (1-share_c), mu_s * (1-share_s), mu_t * (1-share_s), 3.5, 9.5, 3.5, a, a_row)
+        (f"[HOME] {local}", mu_c * share_c, mu_s * share_s, mu_t * share_s, 4.5, 11.5, 4.5, h, h_row),
+        (f"[AWAY] {visitante}", mu_c * (1-share_c), mu_s * (1-share_s), mu_t * (1-share_s), 3.5, 9.5, 3.5, a, a_row)
     ]
 
     for i, (name, cm, sm, tm, l_c, l_s, l_t, cuota_mercado, row_data) in enumerate(data):
-        print(f"║ 📊 {name.upper()}")
+        print(f"║ [STATS] {name.upper()}")
         print(f"║    CORNERS (Est: {cm:.1f}) -> +{l_c}: {get_p(cm, l_c):.1f}%")
         print(f"║    TIROS   (Est: {sm:.1f}) -> +{l_s}: {get_p(sm, l_s):.1f}%")
         print(f"║    A PUERTA(Est: {tm:.1f}) -> +{l_t}: {get_p(tm, l_t):.1f}%")
@@ -158,11 +179,41 @@ def predict_final_boss():
         
         recomendacion = calcular_kelly(prob_ia_decimal, cuota_mercado, instabilidad=instabilidad)
         
+        # Registrar en logger
+        equipo = local if i == 0 else visitante
+        logger.log_prediction(
+            date_pred=str(pd.Timestamp.now().date()),
+            home_team=local,
+            away_team=visitante,
+            event_type=f'Corners +{l_c}',
+            over_line=l_c,
+            prob_ia=prob_ia_decimal,
+            cuota=cuota_mercado,
+            kelly_amount=recomendacion,
+            instability_score=instabilidad,
+            notes=f'Equipo: {equipo}'
+        )
+        
         if recomendacion > 0:
-            print(f"║ 💰 VALUE DETECTADO: Apostar {recomendacion:.2f}€ (inestabilidad: {instabilidad:.2f})")
+            print(f"\u2551 [VALUE] Apostar {recomendacion:.2f}€ (inestabilidad: {instabilidad:.2f})")
         
         if i == 0: print("╟" + "─"*55 + "╢")
     print("╚" + "═"*55 + "╝")
+    
+    # Guardar predicciones en Excel
+    logger.save_predictions()
+    print(f"\n[OK] Predicción guardada en data/prediction_log.xlsx")
 
 if __name__ == "__main__":
-    predict_final_boss()
+    # Permite recibir argumentos: python predict.py "Barcelona" "Valencia" "1.85" "3.75" "4.20"
+    # O ejecutar sin argumentos para modo interactivo
+    
+    if len(sys.argv) >= 3:
+        local = sys.argv[1]
+        visitante = sys.argv[2]
+        h = float(sys.argv[3]) if len(sys.argv) > 3 else None
+        d = float(sys.argv[4]) if len(sys.argv) > 4 else None
+        a = float(sys.argv[5]) if len(sys.argv) > 5 else None
+        predict_final_boss(local, visitante, h, d, a)
+    else:
+        predict_final_boss()
