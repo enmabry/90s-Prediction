@@ -361,6 +361,156 @@ def get_rolling_stats(df, n_games=5):
     df['H2H_Home_Win_Rate'] = df['H2H_Home_Wins'] / (df['H2H_Total'].replace(0, 1))
     df['H2H_Away_Win_Rate'] = df['H2H_Away_Wins'] / (df['H2H_Total'].replace(0, 1))
     
+    # ============ PASO 9: TEAM AGGRESSION SCORE (Agresividad Ofensiva) ============
+    # Mide QUÉ TAN AGRESIVO es un equipo ofensivamente
+    # Combina: volumen de tiros + precisión + consistencia
+    
+    # 1. Shooting Volume Ratio (Tiros por corner - qué tan directo juega)
+    df['Home_Shooting_Volume'] = df[f'rolling_S_{n_games}_Home'] / (df[f'rolling_C_{n_games}_Home'] + 1)
+    df['Away_Shooting_Volume'] = df[f'rolling_S_{n_games}_Away'] / (df[f'rolling_C_{n_games}_Away'] + 1)
+    
+    # 2. Normalized Average Shots (Standardizar: 15 tiros = medio, <10 = defensivo, >18 = ofensivo)
+    # Escala de 0-1: 0 = muy defensivo (5 tiros), 1 = muy ofensivo (25 tiros)
+    df['Home_Offensive_Index'] = (df[f'rolling_S_{n_games}_Home'] - 5) / (25 - 5)
+    df['Away_Offensive_Index'] = (df[f'rolling_S_{n_games}_Away'] - 5) / (25 - 5)
+    df['Home_Offensive_Index'] = df['Home_Offensive_Index'].clip(0, 1)
+    df['Away_Offensive_Index'] = df['Away_Offensive_Index'].clip(0, 1)
+    
+    # 3. Shot Consistency Score (Baja desviación = equipo predecible y agresivo)
+    # Alta desviación = equipo irregular (a veces explota, a veces duerme)
+    df['Home_Shot_Consistency'] = 1 / (1 + (df[f'std_S_{n_games}_Home'] / (df[f'rolling_S_{n_games}_Home'] + 1)))
+    df['Away_Shot_Consistency'] = 1 / (1 + (df[f'std_S_{n_games}_Away'] / (df[f'rolling_S_{n_games}_Away'] + 1)))
+    
+    # 4. FINAL AGGRESSION SCORE (Promedio ponderado)
+    # 50% volumen de tiros + 30% índice ofensivo + 20% consistencia
+    df['Home_Aggression_Score'] = (
+        df['Home_Shooting_Volume'] * 0.4 +
+        df['Home_Offensive_Index'] * 0.35 +
+        df['Home_Shot_Consistency'] * 0.25
+    )
+    df['Away_Aggression_Score'] = (
+        df['Away_Shooting_Volume'] * 0.4 +
+        df['Away_Offensive_Index'] * 0.35 +
+        df['Away_Shot_Consistency'] * 0.25
+    )
+    
+    # 5. DEFENSIVE AGGRESSIVENESS (Lo opuesto - cómo permisivo es un equipo)
+    # Equipo permisivo: deja muchos tiros y remates
+    # Equipo defensivo: bloquea/contiene
+    df['Home_Defensive_Permissiveness'] = (
+        (df[f'rolling_OppS_{n_games}_Home'] / 20) *  # Tiros recibidos normalizados
+        (1 - df['Home_Defense_Efficiency'])  # Ineficiencia defensiva
+    )
+    df['Away_Defensive_Permissiveness'] = (
+        (df[f'rolling_OppS_{n_games}_Away'] / 20) *
+        (1 - df['Away_Defense_Efficiency'])
+    )
+    
+    # 7. EXPECTED SHOTS CON AGGRESSION (Predicción mejorada)
+    # Expected_Shots = Mi agresión × Defensa permisiva del rival
+    df['Expected_Shots_Home'] = (
+        df[f'rolling_S_{n_games}_Home'] *
+        (1 + df['Away_Defensive_Permissiveness'] * 0.5)
+    )
+    df['Expected_Shots_Away'] = (
+        df[f'rolling_S_{n_games}_Away'] *
+        (1 + df['Home_Defensive_Permissiveness'] * 0.5)
+    )
+    
+    # 7. EXPECTED SHOTS ON TARGET (Con precisión)
+    df['Expected_ST_Home'] = (
+        df['Expected_Shots_Home'] * df['Home_Shot_Accuracy']
+    )
+    df['Expected_ST_Away'] = (
+        df['Expected_Shots_Away'] * df['Away_Shot_Accuracy']
+    )
+    
+    # ============ MEJORA #2: OPPOSITION DEFENSIVE STYLE (Defensa del Rival) ============
+    # Idea: No solo qué tiro, sino CÓMO juega defensivamente el rival
+    # Ratio defensivo: (Tiros recibidos del rival) / (Mis tiros)
+    
+    # 1. Defensive Vulnerability (Cuán vulnerable es el rival - ratio ofensa/defensa)
+    df['Away_Defensive_Vulnerability'] = (
+        (df[f'rolling_OppS_{n_games}_Away'] - df[f'rolling_S_{n_games}_Away']) /
+        (df[f'rolling_S_{n_games}_Away'] + 0.1)
+    )
+    df['Home_Defensive_Vulnerability'] = (
+        (df[f'rolling_OppS_{n_games}_Home'] - df[f'rolling_S_{n_games}_Home']) /
+        (df[f'rolling_S_{n_games}_Home'] + 0.1)
+    )
+    
+    # 2. Defensive Pressing Style (Alta presión vs baja presión)
+    # Si ratio shooting_volume es alto = presiona mucho, concede poco por corner
+    # Si ratio es bajo = defensiva baja, muchos corners concedidos
+    df['Away_Defensive_Pressing'] = (
+        df[f'rolling_OppC_{n_games}_Away'] / (df[f'rolling_OppS_{n_games}_Away'] + 1)
+    )
+    df['Home_Defensive_Pressing'] = (
+        df[f'rolling_OppC_{n_games}_Home'] / (df[f'rolling_OppS_{n_games}_Home'] + 1)
+    )
+    
+    # 3. Crossover Effect (Mi agresión × vulnerabilidad defensiva del rival)
+    # "Cuán peligrosa es mi ofensiva contra la defensa del rival"
+    df['Home_Attacking_vs_Away_Defense'] = (
+        df['Home_Aggression_Score'] * (1 + df['Away_Defensive_Vulnerability'].clip(-1, 1))
+    )
+    df['Away_Attacking_vs_Home_Defense'] = (
+        df['Away_Aggression_Score'] * (1 + df['Home_Defensive_Vulnerability'].clip(-1, 1))
+    )
+    
+    # 4. Expected Shots MEJORADO (Versión 2 - con estilo defensivo)
+    df['Expected_Shots_Home_V2'] = (
+        df[f'rolling_S_{n_games}_Home'] *
+        (1 + df['Away_Defensive_Vulnerability'].clip(-0.5, 0.5) * 0.3)
+    )
+    df['Expected_Shots_Away_V2'] = (
+        df[f'rolling_S_{n_games}_Away'] *
+        (1 + df['Home_Defensive_Vulnerability'].clip(-0.5, 0.5) * 0.3)
+    )
+    
+    # ============ MEJORA #3: POSSESSION PROXY (Estimación de Posesión) ============
+    # Sin datos de posesión, usar tiros + corners como proxy
+    
+    # 1. Possession Proxy Simple
+    df['Home_Possession_Proxy'] = (
+        df['HS'] / (df['HS'] + df['AS'] + 0.1) * 100
+    )
+    df['Away_Possession_Proxy'] = (
+        df['AS'] / (df['HS'] + df['AS'] + 0.1) * 100
+    )
+    
+    # 2. Possession from EWM (usando media móvil)
+    df['Home_Possession_EWM'] = (
+        df[f'rolling_S_{n_games}_Home'] / (df[f'rolling_S_{n_games}_Home'] + df[f'rolling_S_{n_games}_Away'] + 0.1) * 100
+    )
+    df['Away_Possession_EWM'] = (
+        df[f'rolling_S_{n_games}_Away'] / (df[f'rolling_S_{n_games}_Home'] + df[f'rolling_S_{n_games}_Away'] + 0.1) * 100
+    )
+    
+    # 3. Expected Shots CON Possession
+    # Equipos con 60%+ posesión deberían tirar más
+    df['Expected_Shots_Home_With_Possession'] = (
+        df['Expected_Shots_Home_V2'] *
+        (1 + (df['Home_Possession_EWM'] - 50) / 100)
+    )
+    df['Expected_Shots_Away_With_Possession'] = (
+        df['Expected_Shots_Away_V2'] *
+        (1 + (df['Away_Possession_EWM'] - 50) / 100)
+    )
+    
+    # 4. Expected Shot Accuracy CON Possession
+    # A más posesión, mejor coordinación = mejor precisión esperada
+    df['Expected_ST_Home_Possession'] = (
+        df['Expected_Shots_Home_With_Possession'] * 
+        df['Home_Shot_Accuracy'] *
+        (1 + (df['Home_Possession_EWM'] - 50) / 200)  # Bonus pequeño por posesión
+    )
+    df['Expected_ST_Away_Possession'] = (
+        df['Expected_Shots_Away_With_Possession'] * 
+        df['Away_Shot_Accuracy'] *
+        (1 + (df['Away_Possession_EWM'] - 50) / 200)
+    )
+    
     return df
 
 if __name__ == "__main__":

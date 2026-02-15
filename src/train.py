@@ -47,7 +47,26 @@ def train_dynamic_brain():
     h2h_features = [c for c in df.columns if 'H2H_' in c]
     features += h2h_features
     
-    # 10. Factor de recencia temporal
+    # 10. TEAM AGGRESSION SCORE (Nuevas métricas - Paso 9)
+    # Agresividad ofensiva + defensiva + predicciones mejoradas
+    aggression_features = [c for c in df.columns if 
+                          'Aggression' in c or 'Offensive' in c or 'Permissiveness' in c or
+                          'Expected_Shots' in c or 'Expected_ST' in c or 'Shooting_Volume' in c or
+                          'Shot_Consistency' in c]
+    features += aggression_features
+    
+    # 11. OPPOSITION DEFENSIVE STYLE (Nuevas métricas - Mejora #2)
+    defensive_style = [c for c in df.columns if 
+                      'Defensive_Vulnerability' in c or 'Defensive_Pressing' in c or
+                      'Attacking_vs_' in c or 'V2' in c]
+    features += defensive_style
+    
+    # 12. POSSESSION PROXY (Nuevas métricas - Mejora #3)
+    possession_features = [c for c in df.columns if 
+                          'Possession_' in c or 'With_Possession' in c]
+    features += possession_features
+    
+    # 13. Factor de recencia temporal
     features += ['temporal_weight']
     
     # Filtrar solo columnas que realmente existen
@@ -62,6 +81,9 @@ def train_dynamic_brain():
     print(f"   - Defense Fatigue: {len([f for f in features if 'Shot_Advantage' in f or 'Expectancy' in f])}")
     print(f"   - Position Gap: {len([f for f in features if 'Diff' in f or 'Quality' in f])}")
     print(f"   - H2H: {len([f for f in features if 'H2H_' in f])}")
+    print(f"   - Aggression Score: {len([f for f in features if 'Aggression' in f or 'Offensive' in f or 'Permissiveness' in f or 'Expected_' in f or 'Consistency' in f])}")
+    print(f"   - Opposition Defense: {len([f for f in features if 'Defensive_Vulnerability' in f or 'Defensive_Pressing' in f or 'Attacking_vs_' in f or 'V2' in f])}")
+    print(f"   - Possession Proxy: {len([f for f in features if 'Possession_' in f or 'With_Possession' in f])}")
     print(f"   - SOS (opponent): {len([f for f in features if 'opponent_' in f])}")
     print(f"   - Mercado: {len([f for f in features if 'Market_' in f or 'Odds_' in f])}")
     
