@@ -30,7 +30,8 @@ LIGAS_DICT = {
     'E0': '[UK] Premier League',
     'E1': '[UK] Championship',
     'L1': '[FRANCIA] Ligue 1',
-    'SA': '[ITALIA] Serie A'
+    'I1': '[ITALIA] Serie A',
+    'B1': '[BÉLGICA] Jupiter League'
 }
 
 
@@ -409,17 +410,21 @@ def ejecutar_script(script_path, descripcion):
 def seleccionar_liga():
     """Muestra ligas disponibles y retorna la seleccionada"""
     try:
-        df = pd.read_csv('data/dataset_final.csv')
+        df = pd.read_csv('data/dataset_final.csv', low_memory=False)
         ligas = df['Div'].unique()
         ligas_dict = {
-            'SP1': '⚪ La Liga (España)',
-            'D1': '🔴 Bundesliga (Alemania)'
+            'SP1': '[ESPAÑA] La Liga',
+            'D1': '[ALEMANIA] Bundesliga',
+            'E0': '[UK] Premier League',
+            'E1': '[UK] Championship',
+            'L1': '[FRANCIA] Ligue 1',
+            'I1': '[ITALIA] Serie A'
         }
         
         console.print("\n[bold cyan]SELECCIONA LIGA:[/bold cyan]")
         tabla_ligas = Table(show_header=True, header_style=f"bold {HEADER_COLOR}")
         tabla_ligas.add_column("[#]", style="cyan")
-        tabla_ligas.add_column("Liga", style="magenta") # Dummy comment to track line
+        tabla_ligas.add_column("Liga", style="magenta")
         tabla_ligas.add_column("Partidos", style="green")
         
         liga_map = {}
