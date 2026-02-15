@@ -7,6 +7,23 @@ from pandas.errors import PerformanceWarning
 
 warnings.simplefilter(action='ignore', category=PerformanceWarning)
 
+# Mapeo de carpetas a códigos de liga (EXTENSIBLE)
+LEAGUE_MAPPING = {
+    'Bundesliga': 'D1',
+    'LaLiga': 'SP1',
+    'PremierLeague': 'E0',
+    'Championship': 'E1',
+    'Ligue1': 'L1',
+    'SerieA': 'SA'
+}
+
+def get_league_code(filepath):
+    """Detecta automáticamente el código de liga desde la ruta del archivo"""
+    for folder_name, code in LEAGUE_MAPPING.items():
+        if folder_name in filepath:
+            return code
+    return 'Unknown'
+
 def calculate_dynamic_standings(df):
     """
     Calcula la tabla clasificatoria dinámica para cada fecha y LIGA (CONSCIENTE DE RESULTADOS).
@@ -236,14 +253,9 @@ if __name__ == "__main__":
         temp = pd.read_csv(f, encoding='unicode_escape')
         temp['Date'] = pd.to_datetime(temp['Date'], dayfirst=True, errors='coerce')
         
-        # Si no existe Div, crearlo basándose en el nombre del archivo
+        # Si no existe Div, crearlo automáticamente desde la ruta
         if 'Div' not in temp.columns:
-            if 'Bundesliga' in f:
-                temp['Div'] = 'D1'
-            elif 'LaLiga' in f:
-                temp['Div'] = 'SP1'
-            else:
-                temp['Div'] = 'Unknown'
+            temp['Div'] = get_league_code(f)
         
         df_list.append(temp)
     

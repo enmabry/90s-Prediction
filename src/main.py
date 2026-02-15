@@ -23,6 +23,16 @@ ERROR_COLOR = "red"
 INFO_COLOR = "yellow"
 ACCENT_COLOR = "magenta"
 
+# Mapeo de códigos de liga a nombres legibles (EXTENSIBLE)
+LIGAS_DICT = {
+    'SP1': '[ESPAÑA] La Liga',
+    'D1': '[ALEMANIA] Bundesliga',
+    'E0': '[UK] Premier League',
+    'E1': '[UK] Championship',
+    'L1': '[FRANCIA] Ligue 1',
+    'SA': '[ITALIA] Serie A'
+}
+
 
 def limpiar_consola():
     """Limpia la consola de forma multiplataforma"""
@@ -98,10 +108,6 @@ def seleccionar_liga():
     try:
         df = pd.read_csv('data/dataset_final.csv')
         ligas = df['Div'].unique()
-        ligas_dict = {
-            'SP1': '[ESPAÑA] La Liga',
-            'D1': '[ALEMANIA] Bundesliga'
-        }
         
         console.print("\n[bold cyan]SELECCIONA LIGA:[/bold cyan]")
         tabla_ligas = Table(show_header=True, header_style=f"bold {HEADER_COLOR}")
@@ -112,11 +118,12 @@ def seleccionar_liga():
         liga_map = {}
         idx = 1
         for liga in sorted(ligas):
-            if liga in ligas_dict:
-                n_partidos = len(df[df['Div'] == liga])
-                tabla_ligas.add_row(str(idx), ligas_dict[liga], str(n_partidos))
-                liga_map[idx] = liga
-                idx += 1
+            # Usa el diccionario global; si no existe, muestra el código
+            nombre_liga = LIGAS_DICT.get(liga, f'[?] {liga}')
+            n_partidos = len(df[df['Div'] == liga])
+            tabla_ligas.add_row(str(idx), nombre_liga, str(n_partidos))
+            liga_map[idx] = liga
+            idx += 1
         
         console.print(tabla_ligas)
         
