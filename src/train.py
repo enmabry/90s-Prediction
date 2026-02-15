@@ -6,7 +6,7 @@ import joblib
 import os
 
 def train_dynamic_brain():
-    df = pd.read_csv('data/dataset_final.csv').copy()
+    df = pd.read_csv('data/dataset_final.csv', low_memory=False).copy()
     
     # Limpieza estricta de NaNs para evitar errores de XGBoost
     df = df.dropna(subset=['HC', 'AC', 'HS', 'AS', 'HST', 'AST', 'FTR', 'AvgH'])
@@ -27,7 +27,27 @@ def train_dynamic_brain():
     # 5. STRENGTH OF SCHEDULE - Posición y forma del rival (¡CLAVE!)
     features += [c for c in df.columns if 'opponent_' in c]
     
-    # 6. Factor de recencia temporal
+    # 6. ATTACKING MOMENTUM (Nuevas métricas - Paso 5)
+    attacking_momentum = [c for c in df.columns if 
+                         'Shot_Accuracy' in c or 'Pressure_Index' in c or 'Attacking_Momentum' in c]
+    features += attacking_momentum
+    
+    # 7. DEFENSE FATIGUE (Nuevas métricas - Paso 6)
+    defense_fatigue = [c for c in df.columns if 
+                      'Shot_Advantage' in c or 'Match_Shot_Expectancy' in c or 
+                      'Match_Corner_Expectancy' in c or 'Defense_Efficiency' in c]
+    features += defense_fatigue
+    
+    # 8. ELO/POSITION GAP (Nuevas métricas - Paso 7)
+    position_gap = [c for c in df.columns if 
+                   'Position_Diff' in c or 'Points_Diff' in c or 'GD_Diff' in c or 'Quality' in c]
+    features += position_gap
+    
+    # 9. HEAD-TO-HEAD RECIENTE (Nuevas métricas - Paso 8)
+    h2h_features = [c for c in df.columns if 'H2H_' in c]
+    features += h2h_features
+    
+    # 10. Factor de recencia temporal
     features += ['temporal_weight']
     
     # Filtrar solo columnas que realmente existen
@@ -38,6 +58,10 @@ def train_dynamic_brain():
     print(f"[MODEL] Modelo entrenado con {len(features)} features:")
     print(f"   - Forma (rolling): {len([f for f in features if 'rolling_' in f])}")
     print(f"   - Inestabilidad: {len([f for f in features if 'instability_' in f or 'std_' in f])}")
+    print(f"   - Attacking Momentum: {len([f for f in features if 'Shot_Accuracy' in f or 'Pressure_Index' in f])}")
+    print(f"   - Defense Fatigue: {len([f for f in features if 'Shot_Advantage' in f or 'Expectancy' in f])}")
+    print(f"   - Position Gap: {len([f for f in features if 'Diff' in f or 'Quality' in f])}")
+    print(f"   - H2H: {len([f for f in features if 'H2H_' in f])}")
     print(f"   - SOS (opponent): {len([f for f in features if 'opponent_' in f])}")
     print(f"   - Mercado: {len([f for f in features if 'Market_' in f or 'Odds_' in f])}")
     
