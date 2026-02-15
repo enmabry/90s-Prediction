@@ -9,7 +9,8 @@ warnings.simplefilter(action='ignore', category=PerformanceWarning)
 
 # Mapeo de carpetas a códigos de liga (EXTENSIBLE)
 # NOTA: Los códigos siguen el estándar de football-data.co.uk
-# D1=Bundesliga, E0=Premier, E1=Championship, SP1=LaLiga, I1=Serie A, L1=Ligue1, B1=Bélgica
+# D1=Bundesliga, E0=Premier, E1=Championship, SP1=LaLiga, I1=Serie A
+# L1=Ligue1, B1=Bélgica, F1=Francia, T1=Turquía, P1=Portugal
 LEAGUE_MAPPING = {
     'Bundesliga': 'D1',
     'LaLiga': 'SP1',
@@ -17,7 +18,10 @@ LEAGUE_MAPPING = {
     'Championship': 'E1',
     'Ligue1': 'L1',
     'SerieA': 'I1',
-    'JupiterLeagueBelgium': 'B1'  # Código estándar para Serie A (Italia)
+    'JupiterLeagueBelgium': 'B1',
+    'LigueOneFrancia': 'F1',
+    'TurkeyLeague': 'T1',
+    'PortugalLeague': 'P1'  # Código estándar para Serie A (Italia)
 }
 
 def get_league_code(filepath):

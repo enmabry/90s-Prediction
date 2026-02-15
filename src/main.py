@@ -31,7 +31,10 @@ LIGAS_DICT = {
     'E1': '[UK] Championship',
     'L1': '[FRANCIA] Ligue 1',
     'I1': '[ITALIA] Serie A',
-    'B1': '[BÉLGICA] Jupiter League'
+    'B1': '[BÉLGICA] Jupiter League',
+    'F1': '[FRANCIA] Ligue 1 (Alta)',
+    'T1': '[TURQUÍA] Süper Lig',
+    'P1': '[PORTUGAL] Primeira Liga'
 }
 
 
