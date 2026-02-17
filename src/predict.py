@@ -5,7 +5,7 @@ import sys
 import numpy as np
 from scipy.stats import poisson
 from logger import PredictionLogger
-from team_context import get_team_data_with_context, get_domestic_league
+from team_context import get_team_data_with_context, get_domestic_league, fill_missing_stats
 
 def calcular_kelly(prob_ia, cuota, banca_total=100, instabilidad=0):
     """
@@ -111,6 +111,12 @@ def predict_final_boss(local=None, visitante=None, h=None, d=None, a=None, match
         
         h_row = get_team_data_with_context(df, local, as_home=True, match_league=match_league)
         a_row = get_team_data_with_context(df, visitante, as_home=False, match_league=match_league)
+        
+        # Rellenar valores faltantes con datos REALES (no inventados)
+        if h_row is not None:
+            h_row = fill_missing_stats(h_row, df, local, as_home=True)
+        if a_row is not None:
+            a_row = fill_missing_stats(a_row, df, visitante, as_home=False)
         
         # INFO: Mostrar si usamos contexto doméstico
         if match_league == 'CL':

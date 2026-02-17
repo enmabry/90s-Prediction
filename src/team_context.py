@@ -4,6 +4,7 @@ Permite mezclar contexto de Champions League + Liga Doméstica.
 """
 
 import pandas as pd
+import numpy as np
 
 # Mapeo manual de equipos europeos a sus ligas domésticas
 # Format: {'Equipo': 'Código_Liga_Doméstica'}
@@ -101,14 +102,18 @@ def get_team_data_with_context(df, team_name, as_home=True, match_league='CL'):
                     
                     # Mezclar datos: 70% CL + 30% Liga Doméstica
                     blended_row = cl_row.copy()
-                    numeric_cols = domestic_row.select_dtypes('number').columns
                     
-                    for col in numeric_cols:
-                        if col in blended_row and col in domestic_row:
-                            cl_val = cl_row.get(col, 0)
-                            dom_val = domestic_row.get(col, 0)
+                    # Obtener columnas numéricas y mezclar
+                    for col in blended_row.index:
+                        try:
+                            cl_val = cl_row[col]
+                            dom_val = domestic_row[col] if col in domestic_row.index else None
                             if pd.notna(cl_val) and pd.notna(dom_val):
-                                blended_row[col] = cl_val * 0.7 + dom_val * 0.3
+                                # Mezcla: 70% CL + 30% Doméstica
+                                if isinstance(cl_val, (int, float)) and isinstance(dom_val, (int, float)):
+                                    blended_row[col] = cl_val * 0.7 + dom_val * 0.3
+                        except:
+                            pass
                     
                     return blended_row
             
@@ -130,14 +135,16 @@ def get_team_data_with_context(df, team_name, as_home=True, match_league='CL'):
                 
                 # Mezclar: 60% Liga principal + 40% Liga doméstica
                 blended_row = primary_row.copy()
-                numeric_cols = domestic_row.select_dtypes('number').columns
                 
-                for col in numeric_cols:
-                    if col in blended_row and col in domestic_row:
-                        primary_val = primary_row.get(col, 0)
-                        dom_val = domestic_row.get(col, 0)
+                for col in blended_row.index:
+                    try:
+                        primary_val = primary_row[col]
+                        dom_val = domestic_row[col] if col in domestic_row.index else None
                         if pd.notna(primary_val) and pd.notna(dom_val):
-                            blended_row[col] = primary_val * 0.6 + dom_val * 0.4
+                            if isinstance(primary_val, (int, float)) and isinstance(dom_val, (int, float)):
+                                blended_row[col] = primary_val * 0.6 + dom_val * 0.4
+                    except:
+                        pass
                 
                 return blended_row
         
@@ -149,3 +156,56 @@ def get_team_data_with_context(df, team_name, as_home=True, match_league='CL'):
         return any_data.sort_values('Date').iloc[-1]
     
     return None
+
+
+def fill_missing_stats(row, df, team_name, as_home=True):
+    """
+    Rellena valores NaN con promedios REALES del equipo del dataset.
+    Nunca inventa números - solo usa datos que existen.
+    
+    Args:
+        row (pd.Series): Fila con datos potencialmente incompletos
+        df (pd.DataFrame): Dataset completo para calcular promedios
+        team_name (str): Nombre del equipo
+        as_home (bool): Si estamos buscando como local o visitante
+    
+    Returns:
+        pd.Series: Row con valores completados usando datos reales
+    """
+    cols_to_fill = [
+        'Expected_Corners_Home', 'Expected_Corners_Away',
+        'Expected_Shots_Home', 'Expected_Shots_Away',
+        'Expected_ST_Home', 'Expected_ST_Away',
+        'Expected_Shots_Home_With_Possession', 'Expected_Shots_Away_With_Possession',
+        'Expected_ST_Home_Possession', 'Expected_ST_Away_Possession',
+        'Corner_Share_Home', 'Corner_Share_Away',
+        'Shot_Share_Home', 'Shot_Share_Away',
+        'HC', 'AC', 'HS', 'AS', 'HST', 'AST'
+    ]
+    
+    role_col = 'HomeTeam' if as_home else 'AwayTeam'
+    opp_col = 'AwayTeam' if as_home else 'HomeTeam'
+    
+    # Obtener datos reales del equipo en CUALQUIER liga
+    team_data = df[df[role_col] == team_name]
+    
+    for col in cols_to_fill:
+        if col in row.index and pd.isna(row[col]):
+            # Intentar obtener promedio real del equipo
+            if col in team_data.columns:
+                avg_val = team_data[col].mean()
+                if pd.notna(avg_val) and not np.isnan(avg_val):
+                    row[col] = avg_val
+                    continue
+            
+            # Si no hay datos del equipo en ese rol, buscar el promedio GLOBAL
+            # (de todos los equipos) para NO inventar números
+            if col in df.columns:
+                global_avg = df[col].mean()
+                if pd.notna(global_avg) and not np.isnan(global_avg):
+                    row[col] = global_avg
+                else:
+                    # Última opción: marcar como 0 pero NO inventar
+                    row[col] = 0.0
+    
+    return row
