@@ -128,6 +128,8 @@ def transform_champions_league():
             'AY': pd.NA,
             'HR': pd.NA,
             'AR': pd.NA,
+            'HPoss': df['home_poss'],  # Posesión REAL del equipo local
+            'APoss': df['away_poss'],  # Posesión REAL del equipo visitante
             'B365H': [estimate_odds(ftr)[0] if pd.notna(ftr) else pd.NA for ftr in df['FTR']],
             'B365D': [estimate_odds(ftr)[1] if pd.notna(ftr) else pd.NA for ftr in df['FTR']],
             'B365A': [estimate_odds(ftr)[2] if pd.notna(ftr) else pd.NA for ftr in df['FTR']],

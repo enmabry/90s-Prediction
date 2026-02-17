@@ -179,6 +179,40 @@ def get_rolling_stats(df, n_games=5):
     # Ofensivas: Tiros (S), Tiros a Puerta (ST), Corners (C)
     # Defensivas: Tiros Recibidos (OppS), Tiros a Puerta Recibidos (OppST), Corners Recibidos (OppC)
     
+    # ============ MEJORA #1: LIGA COMO FEATURE ============
+    # El modelo necesita saber si es CL o doméstica: patrones diferentes
+    df['is_CL'] = (df['Div'] == 'CL').astype(int)
+    # One-hot encoding de las ligas más importantes (para que aprenda diferencias)
+    for league in ['E0', 'SP1', 'D1', 'I1', 'F1', 'CL']:
+        df[f'is_{league}'] = (df['Div'] == league).astype(int)
+    
+    # ============ MEJORA #2: POSESIÓN REAL PARA CL ============
+    # Si hay columnas HPoss/APoss (CL tiene datos reales), usarlas
+    if 'HPoss' not in df.columns:
+        df['HPoss'] = np.nan
+    if 'APoss' not in df.columns:
+        df['APoss'] = np.nan
+    
+    # ============ MEJORA #4: DÍAS DE DESCANSO ============
+    # Calcular días desde el último partido para cada equipo
+    df = df.sort_values('Date').reset_index(drop=True)
+    
+    # Construir historial de fechas por equipo usando vectorización
+    home_dates = df[['Date', 'HomeTeam']].rename(columns={'HomeTeam': 'Team'})
+    away_dates = df[['Date', 'AwayTeam']].rename(columns={'AwayTeam': 'Team'})
+    all_dates = pd.concat([home_dates, away_dates]).sort_values(['Team', 'Date'])
+    all_dates['prev_date'] = all_dates.groupby('Team')['Date'].shift(1)
+    all_dates['rest_days'] = (all_dates['Date'] - all_dates['prev_date']).dt.days
+    all_dates['rest_days'] = all_dates['rest_days'].clip(1, 30).fillna(7)
+    
+    # Map sin merge: crear dict (Team, Date) -> rest_days
+    rest_dict = {}
+    for _, row in all_dates.iterrows():
+        rest_dict[(row['Team'], row['Date'])] = row['rest_days']
+    
+    df['home_rest_days'] = df.apply(lambda r: rest_dict.get((r['HomeTeam'], r['Date']), 7.0), axis=1)
+    df['away_rest_days'] = df.apply(lambda r: rest_dict.get((r['AwayTeam'], r['Date']), 7.0), axis=1)
+    
     # --- PASO 0A: CALCULAR H2H STATS ---
     h2h_stats = calculate_h2h_stats(df)
     
@@ -228,6 +262,24 @@ def get_rolling_stats(df, n_games=5):
             lambda x: x.rolling(window=n_games, min_periods=1).std().shift(1)
         )
 
+    # ============ MEJORA #3: TENDENCIA DE TIROS (SLOPE) ============
+    # Detecta si un equipo dispara cada vez más o menos en sus últimos partidos
+    # Slope positivo = tendencia al alza, negativo = a la baja
+    # NOTA: Se calcula ANTES del merge (PASO 3) para que se recoja automáticamente
+    for f in ['S', 'ST']:
+        combined[f'slope_{f}_{n_games}'] = combined.groupby('Team')[f].transform(
+            lambda x: x.rolling(window=n_games, min_periods=2).apply(
+                lambda vals: np.polyfit(range(len(vals)), vals, 1)[0] if len(vals) >= 2 else 0,
+                raw=True
+            ).shift(1)
+        )
+        combined[f'slope_{f}_{n_games}_Role'] = combined.groupby(['Team', 'IsHome'])[f].transform(
+            lambda x: x.rolling(window=n_games, min_periods=2).apply(
+                lambda vals: np.polyfit(range(len(vals)), vals, 1)[0] if len(vals) >= 2 else 0,
+                raw=True
+            ).shift(1)
+        )
+
     # --- PASO 3: REINTEGRAR AL DATAFRAME ORIGINAL ---
     # Unimos para el Local
     df = df.merge(combined, left_on=['Date', 'HomeTeam'], right_on=['Date', 'Team'], how='left').drop('Team', axis=1)
@@ -244,6 +296,37 @@ def get_rolling_stats(df, n_games=5):
     # Corner Share: Qué porcentaje de corners suele aportar cada equipo
     df['Corner_Share_Home'] = df[f'rolling_C_{n_games}_Home'] / (df[f'rolling_C_{n_games}_Home'] + df[f'rolling_C_{n_games}_Away']).replace(0, 1)
     df['Shot_Share_Home'] = df[f'rolling_S_{n_games}_Home'] / (df[f'rolling_S_{n_games}_Home'] + df[f'rolling_S_{n_games}_Away']).replace(0, 1)
+    
+    # Fill NaN slopes con 0 (sin tendencia)
+    for c in df.columns:
+        if 'slope_' in c:
+            df[c] = df[c].fillna(0)
+    
+    # ============ MEJORA #2b: POSESIÓN REAL EN EL MODELO ============
+    # Usar posesión real si existe (CL), proxy si no
+    df['HPoss_Real'] = df['HPoss'] if 'HPoss' in df.columns else np.nan
+    df['APoss_Real'] = df['APoss'] if 'APoss' in df.columns else np.nan
+    
+    # Calcular rolling de posesión real (solo para equipos CL que tienen datos)
+    if df['HPoss_Real'].notna().any():
+        poss_home = df[['Date', 'HomeTeam', 'HPoss_Real']].copy()
+        poss_home.columns = ['Date', 'Team', 'Poss']
+        poss_away = df[['Date', 'AwayTeam', 'APoss_Real']].copy()
+        poss_away.columns = ['Date', 'Team', 'Poss']
+        poss_all = pd.concat([poss_home, poss_away]).sort_values(['Team', 'Date'])
+        poss_all['rolling_Poss'] = poss_all.groupby('Team')['Poss'].transform(
+            lambda x: x.ewm(span=n_games, min_periods=1, adjust=False).mean().shift(1)
+        )
+        # Map back sin merge (evitar duplicados)
+        poss_dict = {}
+        for _, row in poss_all.dropna(subset=['rolling_Poss']).iterrows():
+            poss_dict[(row['Team'], row['Date'])] = row['rolling_Poss']
+        
+        df['rolling_Poss_Home'] = df.apply(lambda r: poss_dict.get((r['HomeTeam'], r['Date']), np.nan), axis=1)
+        df['rolling_Poss_Away'] = df.apply(lambda r: poss_dict.get((r['AwayTeam'], r['Date']), np.nan), axis=1)
+    else:
+        df['rolling_Poss_Home'] = np.nan
+        df['rolling_Poss_Away'] = np.nan
     
     # --- INESTABILIDAD (VARIANZA INDIVIDUAL) ---
     # Ratio de Inestabilidad: Desviación Estándar / Media (Coeficiente de Variación)
@@ -409,16 +492,17 @@ def get_rolling_stats(df, n_games=5):
     
     # 7. EXPECTED SHOTS CON AGGRESSION (Predicción mejorada)
     # Expected_Shots = Mi agresión × Defensa permisiva del rival
+    # MEJORA #5: Usar rolling por ROL (Home/Away específico) para mayor precisión
     df['Expected_Shots_Home'] = (
-        df[f'rolling_S_{n_games}_Home'] *
+        df[f'rolling_S_{n_games}_Role_Home'] *
         (1 + df['Away_Defensive_Permissiveness'] * 0.5)
     )
     df['Expected_Shots_Away'] = (
-        df[f'rolling_S_{n_games}_Away'] *
+        df[f'rolling_S_{n_games}_Role_Away'] *
         (1 + df['Home_Defensive_Permissiveness'] * 0.5)
     )
-    
     # 7. EXPECTED SHOTS ON TARGET (Con precisión)
+    # MEJORA #5: Usar rolling por ROL para ST también
     df['Expected_ST_Home'] = (
         df['Expected_Shots_Home'] * df['Home_Shot_Accuracy']
     )
@@ -511,6 +595,21 @@ def get_rolling_stats(df, n_games=5):
         df['Away_Shot_Accuracy'] *
         (1 + (df['Away_Possession_EWM'] - 50) / 200)
     )
+    
+    # ============ MEJORA #2c: POSESIÓN REAL OVERWRITE ============
+    # Si tenemos posesión real (CL), usarla en vez del proxy para Expected Shots
+    poss_home_real = df['rolling_Poss_Home'].notna()
+    if poss_home_real.any():
+        df.loc[poss_home_real, 'Expected_Shots_Home_With_Possession'] = (
+            df.loc[poss_home_real, 'Expected_Shots_Home_V2'] *
+            (1 + (df.loc[poss_home_real, 'rolling_Poss_Home'] - 50) / 100)
+        )
+    poss_away_real = df['rolling_Poss_Away'].notna()
+    if poss_away_real.any():
+        df.loc[poss_away_real, 'Expected_Shots_Away_With_Possession'] = (
+            df.loc[poss_away_real, 'Expected_Shots_Away_V2'] *
+            (1 + (df.loc[poss_away_real, 'rolling_Poss_Away'] - 50) / 100)
+        )
     
     return df
 

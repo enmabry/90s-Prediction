@@ -378,6 +378,39 @@ def get_team_data_with_context(df, team_name, as_home=True, match_league='CL'):
     return None
 
 
+def get_cl_stats(df, team_name, as_home=True):
+    """
+    Obtiene promedios REALES de un equipo en Champions League (home o away).
+    Sirve para corregir la predicción del modelo en partidos CL.
+    
+    Returns:
+        dict: {
+            'cl_shots': media de tiros,
+            'cl_shots_target': media de tiros a puerta,
+            'cl_corners': media de corners,
+            'cl_n': número de partidos CL en ese rol
+        } o None si no hay datos
+    """
+    cl_data = df[df['Div'] == 'CL']
+    
+    if as_home:
+        team_cl = cl_data[cl_data['HomeTeam'] == team_name]
+        shots_col, st_col, c_col = 'HS', 'HST', 'HC'
+    else:
+        team_cl = cl_data[cl_data['AwayTeam'] == team_name]
+        shots_col, st_col, c_col = 'AS', 'AST', 'AC'
+    
+    if team_cl.empty:
+        return None
+    
+    return {
+        'cl_shots': team_cl[shots_col].mean(),
+        'cl_shots_target': team_cl[st_col].mean(),
+        'cl_corners': team_cl[c_col].mean(),
+        'cl_n': len(team_cl)
+    }
+
+
 def fill_missing_stats(row, df, team_name, as_home=True):
     """
     Rellena valores NaN con promedios REALES del equipo del dataset.

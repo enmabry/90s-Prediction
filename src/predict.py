@@ -6,7 +6,8 @@ import numpy as np
 from scipy.stats import poisson
 from logger import PredictionLogger
 from team_context import (get_team_data_with_context, get_domestic_league, 
-                         fill_missing_stats, get_recent_form, get_h2h, resolve_team_name)
+                         fill_missing_stats, get_recent_form, get_h2h, resolve_team_name,
+                         get_cl_stats)
 
 def calcular_kelly(prob_ia, cuota, banca_total=100, instabilidad=0):
     """
@@ -70,6 +71,16 @@ def predict_final_boss(local=None, visitante=None, h=None, d=None, a=None, match
         m_corn = joblib.load('models/corners_model.pkl')
         m_shots = joblib.load('models/shots_total_model.pkl')
         m_target = joblib.load('models/shots_target_model.pkl')
+        
+        # Modelos separados (Mejora #6)
+        try:
+            m_hs = joblib.load('models/shots_home_model.pkl')
+            m_as = joblib.load('models/shots_away_model.pkl')
+            m_hst = joblib.load('models/shots_target_home_model.pkl')
+            m_ast = joblib.load('models/shots_target_away_model.pkl')
+            has_separate_models = True
+        except FileNotFoundError:
+            has_separate_models = False
     except Exception as e:
         print(f"Error cargando recursos: {e}")
         return
@@ -170,13 +181,21 @@ def predict_final_boss(local=None, visitante=None, h=None, d=None, a=None, match
         elif 'AvgA' in col: input_dict[col] = a
         elif 'Odds_Std' in col: input_dict[col] = np.std([h, d, a])
 
-        # C. Datos de Local (Home) y Visitante (Away)
+        # C. Liga como feature (#1)
+        elif col == 'is_CL': input_dict[col] = 1 if match_league == 'CL' else 0
+        elif col.startswith('is_'): input_dict[col] = 1 if match_league == col[3:] else 0
+        
+        # D. Días de descanso (#4) - default 4 para CL (entre semana), 7 para doméstica
+        elif col == 'home_rest_days': input_dict[col] = 4.0 if match_league == 'CL' else 7.0
+        elif col == 'away_rest_days': input_dict[col] = 4.0 if match_league == 'CL' else 7.0
+
+        # E. Datos de Local (Home) y Visitante (Away)
         elif '_Home' in col:
             input_dict[col] = safe_get(h_row, col, 0)
         elif '_Away' in col:
             input_dict[col] = safe_get(a_row, col, 0)
             
-        # D. Diferencias y totales (diff_ / exp_)
+        # F. Diferencias y totales (diff_ / exp_)
         elif 'diff_' in col or 'exp_' in col:
             input_dict[col] = safe_get(h_row, col, 0)
         else:
@@ -191,10 +210,70 @@ def predict_final_boss(local=None, visitante=None, h=None, d=None, a=None, match
     mu_s = m_shots.predict(X_in)[0]
     mu_t = m_target.predict(X_in)[0]
     
+    # MEJORA #6: Modelos separados para HS/AS/HST/AST
+    # Predicen directamente los tiros de cada equipo (no total+share)
+    if has_separate_models:
+        # Crear X_in compatible con modelos separados
+        sep_features = m_hs.feature_names_in_
+        sep_dict = {}
+        for col in sep_features:
+            sep_dict[col] = input_dict.get(col, 0.0)
+        X_sep = pd.DataFrame([sep_dict])[sep_features].fillna(0)
+        
+        mu_hs_direct = m_hs.predict(X_sep)[0]
+        mu_as_direct = m_as.predict(X_sep)[0]
+        mu_hst_direct = m_hst.predict(X_sep)[0]
+        mu_ast_direct = m_ast.predict(X_sep)[0]
+    
     # 5. REPARTO DINÁMICO (Usando los nuevos Shares del Preprocessor)
     # Tomamos el share del local en su último partido en casa
     share_c = safe_get(h_row, 'Corner_Share_Home', 0.5)
     share_s = safe_get(h_row, 'Shot_Share_Home', 0.5)
+    
+    # 5B. AJUSTE CL: Corregir predicciones con promedios reales de CL
+    cl_adj_applied = False
+    if match_league == 'CL':
+        h_cl = get_cl_stats(df, local, as_home=True)
+        a_cl = get_cl_stats(df, visitante, as_home=False)
+        
+        if h_cl and a_cl:
+            min_n = min(h_cl['cl_n'], a_cl['cl_n'])
+            cl_weight = 0.40 if min_n >= 3 else (0.25 if min_n >= 2 else 0.15)
+            model_weight = 1 - cl_weight
+            
+            cl_total_shots = h_cl['cl_shots'] + a_cl['cl_shots']
+            cl_total_target = h_cl['cl_shots_target'] + a_cl['cl_shots_target']
+            cl_total_corners = h_cl['cl_corners'] + a_cl['cl_corners']
+            
+            cl_share_s = h_cl['cl_shots'] / cl_total_shots if cl_total_shots > 0 else 0.5
+            cl_share_c = h_cl['cl_corners'] / cl_total_corners if cl_total_corners > 0 else 0.5
+            
+            mu_s_old = mu_s
+            mu_t_old = mu_t
+            mu_c_old = mu_c
+            
+            mu_s = model_weight * mu_s + cl_weight * cl_total_shots
+            mu_t = model_weight * mu_t + cl_weight * cl_total_target
+            mu_c = model_weight * mu_c + cl_weight * cl_total_corners
+            share_s = model_weight * share_s + cl_weight * cl_share_s
+            share_c = model_weight * share_c + cl_weight * cl_share_c
+            
+            # También ajustar modelos separados con CL real
+            if has_separate_models:
+                mu_hs_direct = model_weight * mu_hs_direct + cl_weight * h_cl['cl_shots']
+                mu_as_direct = model_weight * mu_as_direct + cl_weight * a_cl['cl_shots']
+                mu_hst_direct = model_weight * mu_hst_direct + cl_weight * h_cl['cl_shots_target']
+                mu_ast_direct = model_weight * mu_ast_direct + cl_weight * a_cl['cl_shots_target']
+            
+            cl_adj_applied = True
+            print(f"\n[CL-ADJ] Ajuste Champions ({cl_weight:.0%} CL real, {model_weight:.0%} modelo):")
+            print(f"   Tiros totales: {mu_s_old:.1f} → {mu_s:.1f} (CL real: {cl_total_shots:.1f})")
+            print(f"   A puerta total: {mu_t_old:.1f} → {mu_t:.1f} (CL real: {cl_total_target:.1f})")
+            print(f"   Corners total: {mu_c_old:.1f} → {mu_c:.1f} (CL real: {cl_total_corners:.1f})")
+            if has_separate_models:
+                print(f"   HS directo: {mu_hs_direct:.1f} | AS directo: {mu_as_direct:.1f}")
+                print(f"   HST directo: {mu_hst_direct:.1f} | AST directo: {mu_ast_direct:.1f}")
+            print(f"   Datos CL: {local} {h_cl['cl_n']}p(H), {visitante} {a_cl['cl_n']}p(A)")
     
     def get_p(mu, line): return (1 - poisson.cdf(line, mu)) * 100
 
@@ -220,10 +299,42 @@ def predict_final_boss(local=None, visitante=None, h=None, d=None, a=None, match
     print("╠" + "═"*55 + "╣")
     
     # Cálculos individuales
-    # Local: mu * share | Visitante: mu * (1 - share)
+    # ENSEMBLE INTELIGENTE: total+share como base, separados como refinamiento
+    # Si los separados están dentro de rango razonable, contribuyen al promedio
+    # Si divergen mucho (>40%), se ignoran y se usa solo total+share
+    hs_from_total = mu_s * share_s
+    as_from_total = mu_s * (1 - share_s)
+    hst_from_total = mu_t * share_s
+    ast_from_total = mu_t * (1 - share_s)
+    
+    if has_separate_models:
+        def smart_blend(total_val, sep_val, is_cl=False):
+            """Mezcla inteligente: usa separado solo si es razonable"""
+            if total_val <= 0:
+                return sep_val
+            ratio = sep_val / total_val if total_val > 0 else 1
+            # Si el separado diverge más de 40% del total, ignorarlo
+            if ratio < 0.6 or ratio > 1.4:
+                return total_val
+            # CL: 75% total + 25% separado (total tiene mejor CL-ADJ)
+            # Doméstica: 50% total + 50% separado
+            w_sep = 0.25 if is_cl else 0.50
+            return (1 - w_sep) * total_val + w_sep * sep_val
+        
+        is_cl = match_league == 'CL'
+        hs_final = smart_blend(hs_from_total, mu_hs_direct, is_cl)
+        as_final = smart_blend(as_from_total, mu_as_direct, is_cl)
+        hst_final = smart_blend(hst_from_total, mu_hst_direct, is_cl)
+        ast_final = smart_blend(ast_from_total, mu_ast_direct, is_cl)
+    else:
+        hs_final = hs_from_total
+        as_final = as_from_total
+        hst_final = hst_from_total
+        ast_final = ast_from_total
+    
     data = [
-        (f"[HOME] {local}", mu_c * share_c, mu_s * share_s, mu_t * share_s, 4.5, 11.5, 4.5, h, h_row),
-        (f"[AWAY] {visitante}", mu_c * (1-share_c), mu_s * (1-share_s), mu_t * (1-share_s), 3.5, 9.5, 3.5, a, a_row)
+        (f"[HOME] {local}", mu_c * share_c, hs_final, hst_final, 4.5, 11.5, 4.5, h, h_row),
+        (f"[AWAY] {visitante}", mu_c * (1-share_c), as_final, ast_final, 3.5, 9.5, 3.5, a, a_row)
     ]
 
     for i, (name, cm, sm, tm, l_c, l_s, l_t, cuota_mercado, row_data) in enumerate(data):

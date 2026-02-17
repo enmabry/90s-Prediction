@@ -69,6 +69,23 @@ def train_dynamic_brain():
     # 13. Factor de recencia temporal
     features += ['temporal_weight']
     
+    # 14. NUEVAS FEATURES: Liga, descanso, tendencia, posesión real
+    # Liga como feature (is_CL, is_E0, etc.)
+    league_features = [c for c in df.columns if c.startswith('is_')]
+    features += league_features
+    
+    # Días de descanso
+    rest_features = [c for c in df.columns if 'rest_days' in c]
+    features += rest_features
+    
+    # Tendencia de tiros (slope)
+    slope_features = [c for c in df.columns if 'slope_' in c]
+    features += slope_features
+    
+    # Posesión real (rolling)
+    real_poss_features = [c for c in df.columns if 'rolling_Poss' in c]
+    features += real_poss_features
+    
     # Filtrar solo columnas que realmente existen
     features = [f for f in features if f in df.columns]
     # Eliminar duplicados
@@ -81,9 +98,10 @@ def train_dynamic_brain():
     print(f"   - Defense Fatigue: {len([f for f in features if 'Shot_Advantage' in f or 'Expectancy' in f])}")
     print(f"   - Position Gap: {len([f for f in features if 'Diff' in f or 'Quality' in f])}")
     print(f"   - H2H: {len([f for f in features if 'H2H_' in f])}")
-    print(f"   - Aggression Score: {len([f for f in features if 'Aggression' in f or 'Offensive' in f or 'Permissiveness' in f or 'Expected_' in f or 'Consistency' in f])}")
+    print(f"   - Aggression/Expected: {len([f for f in features if 'Aggression' in f or 'Offensive' in f or 'Permissiveness' in f or 'Expected_' in f or 'Consistency' in f])}")
     print(f"   - Opposition Defense: {len([f for f in features if 'Defensive_Vulnerability' in f or 'Defensive_Pressing' in f or 'Attacking_vs_' in f or 'V2' in f])}")
-    print(f"   - Possession Proxy: {len([f for f in features if 'Possession_' in f or 'With_Possession' in f])}")
+    print(f"   - Possession: {len([f for f in features if 'Possession' in f or 'Poss' in f])}")
+    print(f"   - Liga/Descanso/Slope: {len([f for f in features if f.startswith('is_') or 'rest_' in f or 'slope_' in f])}")
     print(f"   - SOS (opponent): {len([f for f in features if 'opponent_' in f])}")
     print(f"   - Mercado: {len([f for f in features if 'Market_' in f or 'Odds_' in f])}")
     
@@ -124,13 +142,44 @@ def train_dynamic_brain():
     m4 = xgb.XGBRegressor(**model_params).fit(X_train_t, y_train_t)
     print(f"Tiros a Puerta MAE: {mean_absolute_error(y_test_t, m4.predict(X_test_t)):.2f}")
 
-    # Guardar la "Cuádruple Inteligencia"
+    # ============ MEJORA #6: MODELOS SEPARADOS POR EQUIPO (HOME / AWAY) ============
+    # En vez de predecir HS+AS y repartir con share, predecir cada uno directamente
+    
+    # 5. TIROS LOCAL (HS)
+    y_hs = df['HS']
+    X_train_hs, X_test_hs, y_train_hs, y_test_hs = train_test_split(X, y_hs, test_size=0.2, random_state=42)
+    m5 = xgb.XGBRegressor(**model_params).fit(X_train_hs, y_train_hs)
+    print(f"Tiros Local (HS) MAE: {mean_absolute_error(y_test_hs, m5.predict(X_test_hs)):.2f}")
+    
+    # 6. TIROS VISITANTE (AS)
+    y_as = df['AS']
+    X_train_as, X_test_as, y_train_as, y_test_as = train_test_split(X, y_as, test_size=0.2, random_state=42)
+    m6 = xgb.XGBRegressor(**model_params).fit(X_train_as, y_train_as)
+    print(f"Tiros Visitante (AS) MAE: {mean_absolute_error(y_test_as, m6.predict(X_test_as)):.2f}")
+    
+    # 7. TIROS A PUERTA LOCAL (HST)
+    y_hst = df['HST']
+    X_train_hst, X_test_hst, y_train_hst, y_test_hst = train_test_split(X, y_hst, test_size=0.2, random_state=42)
+    m7 = xgb.XGBRegressor(**model_params).fit(X_train_hst, y_train_hst)
+    print(f"Tiros a Puerta Local (HST) MAE: {mean_absolute_error(y_test_hst, m7.predict(X_test_hst)):.2f}")
+    
+    # 8. TIROS A PUERTA VISITANTE (AST)
+    y_ast = df['AST']
+    X_train_ast, X_test_ast, y_train_ast, y_test_ast = train_test_split(X, y_ast, test_size=0.2, random_state=42)
+    m8 = xgb.XGBRegressor(**model_params).fit(X_train_ast, y_train_ast)
+    print(f"Tiros a Puerta Visitante (AST) MAE: {mean_absolute_error(y_test_ast, m8.predict(X_test_ast)):.2f}")
+
+    # Guardar todos los modelos
     os.makedirs('models', exist_ok=True)
     joblib.dump(m1, 'models/result_model.pkl')
     joblib.dump(m2, 'models/corners_model.pkl')
     joblib.dump(m3, 'models/shots_total_model.pkl')
     joblib.dump(m4, 'models/shots_target_model.pkl')
-    print("\nModelos dinámicos listos.")
+    joblib.dump(m5, 'models/shots_home_model.pkl')
+    joblib.dump(m6, 'models/shots_away_model.pkl')
+    joblib.dump(m7, 'models/shots_target_home_model.pkl')
+    joblib.dump(m8, 'models/shots_target_away_model.pkl')
+    print("\n8 modelos entrenados y guardados.")
 
 if __name__ == "__main__":
     train_dynamic_brain()
