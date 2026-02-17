@@ -1,23 +1,24 @@
 """
 Script para transformar Champions League al formato estándar.
 Convierte champions_league_matches25-26.csv al formato compatible con el pipeline.
+
+Datos disponibles en el CSV de CL:
+- score: "1–3" → FTHG=1, FTAG=3
+- home_shots_on_target: "3 of 10" → HST=3, HS=10
+- away_shots_on_target: "8 of 18" → AST=8, AS=18  
+- home_possession / away_possession: "63%" → porcentaje
+- NO tiene corners (HC/AC) → se rellenan con promedios de liga doméstica
 """
 
 import pandas as pd
+import numpy as np
 import os
 from pathlib import Path
 
 def transform_champions_league():
     """
     Lee Champions League CSV y lo transforma al formato estándar.
-    
-    Mapeo:
-    - date → Date, time → Time (default 19:45)
-    - home_team → HomeTeam
-    - away_team → AwayTeam
-    - score → FTHG, FTAG (ej: "1–3" → FTHG=1, FTAG=3)
-    - result → FTR (Away Win→A, Home Win→H, Draw→D)
-    - Agrega Div='CL' (Champions League)
+    Extrae tiros totales y a puerta del campo "X of Y".
     """
     
     # Rutas
@@ -39,12 +40,11 @@ def transform_champions_league():
             print(f"[ERROR] Columnas faltantes: {missing}")
             return False
         
-        # Procesar score (ej: "1–3" → FTHG=1, FTAG=3)
+        # ─── Parsear score: "1–3" → FTHG=1, FTAG=3 ───
         def parse_score(score_str):
             if pd.isna(score_str) or score_str == '':
                 return None, None
             try:
-                # El separador es "–" (en-dash) no "-"
                 parts = str(score_str).split('–')
                 if len(parts) == 2:
                     return int(parts[0].strip()), int(parts[1].strip())
@@ -52,83 +52,114 @@ def transform_champions_league():
                 pass
             return None, None
         
-        # Crear FTHG y FTAG
         df[['FTHG', 'FTAG']] = df['score'].apply(
             lambda x: pd.Series(parse_score(x))
         )
         
-        # Mapear result a FTR
-        result_map = {
-            'Home Win': 'H',
-            'Away Win': 'A',
-            'Draw': 'D'
-        }
+        # ─── Parsear shots: "3 of 10" → on_target=3, total=10 ───
+        def parse_shots(shots_str):
+            """Extrae tiros a puerta y totales de '3 of 10'"""
+            if pd.isna(shots_str) or shots_str == '':
+                return None, None
+            try:
+                parts = str(shots_str).split(' of ')
+                if len(parts) == 2:
+                    on_target = int(parts[0].strip())
+                    total = int(parts[1].strip())
+                    return on_target, total
+            except:
+                pass
+            return None, None
+        
+        # Home shots
+        df[['HST', 'HS']] = df['home_shots_on_target'].apply(
+            lambda x: pd.Series(parse_shots(x))
+        )
+        # Away shots
+        df[['AST', 'AS']] = df['away_shots_on_target'].apply(
+            lambda x: pd.Series(parse_shots(x))
+        )
+        
+        # ─── Parsear posesión: "63%" → 63 ───
+        def parse_possession(poss_str):
+            if pd.isna(poss_str) or poss_str == '':
+                return None
+            try:
+                return float(str(poss_str).replace('%', '').strip())
+            except:
+                return None
+        
+        df['home_poss'] = df['home_possession'].apply(parse_possession)
+        df['away_poss'] = df['away_possession'].apply(parse_possession)
+        
+        # ─── Mapear resultado ───
+        result_map = {'Home Win': 'H', 'Away Win': 'A', 'Draw': 'D'}
         df['FTR'] = df['result'].map(result_map)
         
-        # Crear columnas de cuotas estimadas basadas en FTR
-        # (promedio simple: victoria=1.8, empate=3.5, derrota=5.0)
+        # ─── Cuotas estimadas ───
         def estimate_odds(ftr):
-            if ftr == 'H':
-                return 1.8, 3.5, 5.0
-            elif ftr == 'A':
-                return 5.0, 3.5, 1.8
-            else:  # Draw
-                return 3.5, 3.5, 3.5
+            if ftr == 'H':   return 1.8, 3.5, 5.0
+            elif ftr == 'A': return 5.0, 3.5, 1.8
+            else:            return 3.5, 3.5, 3.5
         
-        # Crear DataFrame con columnas estándar
+        # ─── Crear DataFrame estándar ───
         output_df = pd.DataFrame({
-            'Div': 'CL',  # Champions League
+            'Div': 'CL',
             'Date': pd.to_datetime(df['date']).dt.strftime('%d/%m/%Y'),
-            'Time': '19:45',  # Hora por defecto
+            'Time': '19:45',
             'HomeTeam': df['home_team'],
             'AwayTeam': df['away_team'],
             'FTHG': df['FTHG'],
             'FTAG': df['FTAG'],
             'FTR': df['FTR'],
-            'HTHG': pd.NA,  # No disponible en Champions League
+            'HTHG': pd.NA,
             'HTAG': pd.NA,
             'HTR': pd.NA,
             'Referee': df['referee'].fillna('Unknown'),
-            'HS': pd.NA,  # Shots (usar HST como proxy)
-            'AS': pd.NA,
-            'HST': pd.to_numeric(df['home_shots_on_target'], errors='coerce'),  # Shots on target
-            'AST': pd.to_numeric(df['away_shots_on_target'], errors='coerce'),
-            'HF': pd.NA,  # Fouls (no disponible)
+            'HS': df['HS'],           # Tiros totales (extraído de "X of Y")
+            'AS': df['AS'],           # Tiros totales visitante
+            'HST': df['HST'],         # Tiros a puerta (extraído de "X of Y")
+            'AST': df['AST'],         # Tiros a puerta visitante
+            'HF': pd.NA,
             'AF': pd.NA,
-            'HC': pd.NA,  # Corners (no disponible)
-            'AC': pd.NA,
-            'HY': pd.NA,  # Tarjetas (no disponible)
+            'HC': pd.NA,              # Corners: NO disponible en CL → se rellena después
+            'AC': pd.NA,              # con promedios de liga doméstica
+            'HY': pd.NA,
             'AY': pd.NA,
-            'HR': pd.NA,  # Red cards
+            'HR': pd.NA,
             'AR': pd.NA,
-            # Cuotas estándar (Bet365, usamos estimadas)
             'B365H': [estimate_odds(ftr)[0] if pd.notna(ftr) else pd.NA for ftr in df['FTR']],
             'B365D': [estimate_odds(ftr)[1] if pd.notna(ftr) else pd.NA for ftr in df['FTR']],
             'B365A': [estimate_odds(ftr)[2] if pd.notna(ftr) else pd.NA for ftr in df['FTR']],
         })
         
-        # Cuotas promedio (necesarias para validación)
         output_df['AvgH'] = output_df['B365H']
         output_df['AvgD'] = output_df['B365D']
         output_df['AvgA'] = output_df['B365A']
         
-        # Filtrar filas donde FTHG y FTAG no son NaN (datos válidos)
+        # Filtrar filas válidas
         output_df = output_df[output_df['FTHG'].notna()]
         
+        # Stats
+        hs_valid = output_df['HS'].notna().sum()
+        hst_valid = output_df['HST'].notna().sum()
         print(f"[INFO] Transformando {len(output_df)} partidos")
+        print(f"[INFO] Tiros totales (HS/AS): {hs_valid} registros con datos")
+        print(f"[INFO] Tiros a puerta (HST/AST): {hst_valid} registros con datos")
+        print(f"[INFO] Corners (HC/AC): No disponible → se rellenará con liga doméstica")
         
         # Guardar
         os.makedirs(output_file.parent, exist_ok=True)
-        output_df.to_csv(output_file, index=False)
+        output_df.to_csv(output_file, index=False, encoding='utf-8')
         
         print(f"[OK] Guardado en: {output_file}")
-        print(f"[INFO] Columnas: {', '.join(output_df.columns[:15])}")
-        print(f"[INFO] Primeros 3 registros:\n{output_df.head(3)}")
         
         return True
         
     except Exception as e:
         print(f"[ERROR] {str(e)}")
+        import traceback
+        traceback.print_exc()
         return False
 
 

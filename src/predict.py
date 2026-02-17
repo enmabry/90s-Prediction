@@ -5,7 +5,8 @@ import sys
 import numpy as np
 from scipy.stats import poisson
 from logger import PredictionLogger
-from team_context import get_team_data_with_context, get_domestic_league, fill_missing_stats
+from team_context import (get_team_data_with_context, get_domestic_league, 
+                         fill_missing_stats, get_recent_form, get_h2h, resolve_team_name)
 
 def calcular_kelly(prob_ia, cuota, banca_total=100, instabilidad=0):
     """
@@ -120,14 +121,23 @@ def predict_final_boss(local=None, visitante=None, h=None, d=None, a=None, match
         
         # INFO: Mostrar si usamos contexto doméstico
         if match_league == 'CL':
-            h_domestic = get_domestic_league(local)
-            a_domestic = get_domestic_league(visitante)
+            h_domestic = get_domestic_league(local, df)
+            a_domestic = get_domestic_league(visitante, df)
             if h_domestic or a_domestic:
                 print(f"\n[INFO] Usando contexto de ligas domésticas:")
                 if h_domestic:
-                    print(f"   {local}: Champions League + {h_domestic}")
+                    h_dom_name = resolve_team_name(local, df)
+                    extra = f" (como '{h_dom_name}')" if h_dom_name != local else ""
+                    print(f"   {local}: Champions League + {h_domestic}{extra}")
                 if a_domestic:
-                    print(f"   {visitante}: Champions League + {a_domestic}")
+                    a_dom_name = resolve_team_name(visitante, df)
+                    extra = f" (como '{a_dom_name}')" if a_dom_name != visitante else ""
+                    print(f"   {visitante}: Champions League + {a_domestic}{extra}")
+        
+        # FORMA RECIENTE + H2H
+        h_form = get_recent_form(df, local, n=5)
+        a_form = get_recent_form(df, visitante, n=5)
+        h2h = get_h2h(df, local, visitante, n=10)
         
         if h_row is None or a_row is None:
             print("Error: No se encontraron datos para esos equipos.")
@@ -193,6 +203,20 @@ def predict_final_boss(local=None, visitante=None, h=None, d=None, a=None, match
     print(f"║ ⚽ {local.upper()} vs {visitante.upper()} ".ljust(56) + "║")
     print("╠" + "═"*55 + "╣")
     print(f"║ 1X2: L:{prob_1x2[0]*100:.1f}% | X:{prob_1x2[1]*100:.1f}% | V:{prob_1x2[2]*100:.1f}% ".ljust(56) + "║")
+    print("╠" + "═"*55 + "╣")
+    
+    # FORMA RECIENTE
+    h_streak = h_form['form_streak']
+    a_streak = a_form['form_streak']
+    h_streak_str = f"+{h_streak}W" if h_streak > 0 else (f"{h_streak}L" if h_streak < 0 else "~")
+    a_streak_str = f"+{a_streak}W" if a_streak > 0 else (f"{a_streak}L" if a_streak < 0 else "~")
+    print(f"║ FORMA (5): {local}: {h_form['form_points']}pts ({h_streak_str}) | {visitante}: {a_form['form_points']}pts ({a_streak_str}) ".ljust(56) + "║")
+    
+    # HEAD TO HEAD
+    if h2h['h2h_matches'] > 0:
+        print(f"║ H2H ({h2h['h2h_matches']}p): {local}:{h2h['h2h_wins_a']}W | E:{h2h['h2h_draws']} | {visitante}:{h2h['h2h_wins_b']}W (gol: {h2h['h2h_goals_a']:.1f}-{h2h['h2h_goals_b']:.1f}) ".ljust(56) + "║")
+    else:
+        print(f"║ H2H: Sin enfrentamientos previos ".ljust(56) + "║")
     print("╠" + "═"*55 + "╣")
     
     # Cálculos individuales

@@ -538,7 +538,11 @@ if __name__ == "__main__":
     
     df_list = []
     for f in files:
-        temp = pd.read_csv(f, encoding='unicode_escape')
+        # Leer con encoding inteligente: UTF-8 primero (soporta BOM), latin-1 como fallback
+        try:
+            temp = pd.read_csv(f, encoding='utf-8-sig')
+        except UnicodeDecodeError:
+            temp = pd.read_csv(f, encoding='latin-1')
         temp['Date'] = pd.to_datetime(temp['Date'], dayfirst=True, errors='coerce')
         
         # Si no existe Div, crearlo automáticamente desde la ruta
@@ -560,12 +564,46 @@ if __name__ == "__main__":
     final_data['temporal_weight'] = np.exp(-final_data['days_since_match'] / 365)
     
     # Rellenar valores por defecto para ligas que no tienen ciertos datos (ej: Champions League)
-    # HC, AC (Corners): rellenar con promedio o 0
+    # ─── CORNERS INTELIGENTES: usar promedio de liga doméstica del equipo ───
+    # Para CL, cada equipo tiene una liga doméstica → usar sus corners promedio reales
+    from team_context import get_domestic_league, resolve_team_name, NAME_ALIASES
+    
+    cl_mask = final_data['Div'] == 'CL'
+    if cl_mask.any():
+        # Calcular promedios de corners por equipo en ligas domésticas
+        domestic_data = final_data[~cl_mask]
+        
+        for idx in final_data[cl_mask & final_data['HC'].isna()].index:
+            home_team = final_data.loc[idx, 'HomeTeam']
+            away_team = final_data.loc[idx, 'AwayTeam']
+            
+            # Buscar corners promedio del equipo local en su liga doméstica
+            dom_league_h = get_domestic_league(home_team)
+            if dom_league_h:
+                dom_name_h = resolve_team_name(home_team, domestic_data) if home_team in NAME_ALIASES else home_team
+                h_corners = domestic_data[domestic_data['HomeTeam'].isin([home_team, dom_name_h])]['HC'].mean()
+                if pd.notna(h_corners):
+                    final_data.loc[idx, 'HC'] = h_corners
+            
+            # Buscar corners promedio del equipo visitante en su liga doméstica
+            dom_league_a = get_domestic_league(away_team)
+            if dom_league_a:
+                dom_name_a = resolve_team_name(away_team, domestic_data) if away_team in NAME_ALIASES else away_team
+                a_corners = domestic_data[domestic_data['AwayTeam'].isin([away_team, dom_name_a])]['AC'].mean()
+                if pd.notna(a_corners):
+                    final_data.loc[idx, 'AC'] = a_corners
+        
+        print(f"[INFO] Corners CL rellenados con promedios de ligas domésticas")
+    
+    # Fallback para cualquier NaN restante (equipos sin liga doméstica en dataset)
     final_data['HC'] = final_data['HC'].fillna(final_data['HC'].mean() or 5.0)
     final_data['AC'] = final_data['AC'].fillna(final_data['AC'].mean() or 5.0)
-    # HS, AS (Shots): rellenar con promedio
+    # HS, AS ya vienen del CSV de CL, solo rellenar si faltan por alguna razón
     final_data['HS'] = final_data['HS'].fillna(final_data['HS'].mean() or 12.0)
     final_data['AS'] = final_data['AS'].fillna(final_data['AS'].mean() or 12.0)
+    # HST, AST también vienen del CSV de CL
+    final_data['HST'] = final_data['HST'].fillna(final_data['HST'].mean() or 4.0)
+    final_data['AST'] = final_data['AST'].fillna(final_data['AST'].mean() or 4.0)
     
     # Limpieza de seguridad para el entrenamiento
     # Solo requerir columnas absolutamente críticas (resultados y cuotas)
