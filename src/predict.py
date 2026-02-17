@@ -5,6 +5,7 @@ import sys
 import numpy as np
 from scipy.stats import poisson
 from logger import PredictionLogger
+from team_context import get_team_data_with_context, get_domestic_league
 
 def calcular_kelly(prob_ia, cuota, banca_total=100, instabilidad=0):
     """
@@ -46,7 +47,7 @@ def calcular_kelly(prob_ia, cuota, banca_total=100, instabilidad=0):
     monto_recom = banca_total * f_frac * stability_factor
     return monto_recom
 
-def predict_final_boss(local=None, visitante=None, h=None, d=None, a=None):
+def predict_final_boss(local=None, visitante=None, h=None, d=None, a=None, match_league=None):
     """
     Sistema de predicción contextual.
     
@@ -56,6 +57,7 @@ def predict_final_boss(local=None, visitante=None, h=None, d=None, a=None):
         h (float, optional): Cuota para el local
         d (float, optional): Cuota para el empate
         a (float, optional): Cuota para el visitante
+        match_league (str, optional): Liga del partido (ej: 'CL', 'E0') para contexto
     """
     # 1. Carga de recursos
     try:
@@ -95,13 +97,37 @@ def predict_final_boss(local=None, visitante=None, h=None, d=None, a=None):
         d = float(input("Cuota X: ") if d is None else d)
         a = float(input("Cuota 2: ") if a is None else a)
 
-    # 2. LOCALIZACIÓN POR ROL (CAMBIO CLAVE)
-    # Buscamos la última vez que el LOCAL jugó en CASA y el VISITANTE fuera
+    # 2. LOCALIZACIÓN POR ROL CON CONTEXTO INTELIGENTE (CAMBIO CLAVE)
+    # Buscamos datos considerando:
+    # - Si es Champions League, mezcla datos de CL + Liga doméstica
+    # - Si es otra liga, usa su contexto doméstico como ayuda
     try:
-        h_row = df[df['HomeTeam'] == local].sort_values('Date').iloc[-1]
-        a_row = df[df['AwayTeam'] == visitante].sort_values('Date').iloc[-1]
-    except Exception:
-        print("Error: No se encontraron datos para esos equipos en esos roles.")
+        if match_league is None:
+            # Fallback: detectar liga más común para los equipos
+            h_matches = df[df['HomeTeam'] == local]
+            a_matches = df[df['AwayTeam'] == visitante]
+            if not h_matches.empty:
+                match_league = h_matches['Div'].mode()[0]
+        
+        h_row = get_team_data_with_context(df, local, as_home=True, match_league=match_league)
+        a_row = get_team_data_with_context(df, visitante, as_home=False, match_league=match_league)
+        
+        # INFO: Mostrar si usamos contexto doméstico
+        if match_league == 'CL':
+            h_domestic = get_domestic_league(local)
+            a_domestic = get_domestic_league(visitante)
+            if h_domestic or a_domestic:
+                print(f"\n[INFO] Usando contexto de ligas domésticas:")
+                if h_domestic:
+                    print(f"   {local}: Champions League + {h_domestic}")
+                if a_domestic:
+                    print(f"   {visitante}: Champions League + {a_domestic}")
+        
+        if h_row is None or a_row is None:
+            print("Error: No se encontraron datos para esos equipos.")
+            return
+    except Exception as e:
+        print(f"Error en búsqueda de datos: {str(e)}")
         return
 
     model_features = m_res.feature_names_in_

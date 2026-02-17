@@ -34,7 +34,8 @@ LIGAS_DICT = {
     'B1': '[BÉLGICA] Jupiter League',
     'F1': '[FRANCIA] Ligue 1 (Alta)',
     'T1': '[TURQUÍA] Süper Lig',
-    'P1': '[PORTUGAL] Primeira Liga'
+    'P1': '[PORTUGAL] Primeira Liga',
+    'CL': '[EUROPA] Champions League'
 }
 
 
@@ -234,7 +235,8 @@ def opcion_prediccion():
         sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
         from predict import predict_final_boss
         
-        predict_final_boss(local, visitante, h, d, a)
+        # Pasar la liga para contexto inteligente (Champions + Liga doméstica)
+        predict_final_boss(local, visitante, h, d, a, match_league=liga)
         console.print(f"[{SUCCESS_COLOR}][OK] Prediccion completada[/{SUCCESS_COLOR}]")
     except Exception as e:
         console.print(f"[{ERROR_COLOR}]Error: {str(e)}[/{ERROR_COLOR}]")

@@ -10,7 +10,7 @@ warnings.simplefilter(action='ignore', category=PerformanceWarning)
 # Mapeo de carpetas a códigos de liga (EXTENSIBLE)
 # NOTA: Los códigos siguen el estándar de football-data.co.uk
 # D1=Bundesliga, E0=Premier, E1=Championship, SP1=LaLiga, I1=Serie A
-# L1=Ligue1, B1=Bélgica, F1=Francia, T1=Turquía, P1=Portugal
+# L1=Ligue1, B1=Bélgica, F1=Francia, T1=Turquía, P1=Portugal, CL=Champions League
 LEAGUE_MAPPING = {
     'Bundesliga': 'D1',
     'LaLiga': 'SP1',
@@ -21,7 +21,8 @@ LEAGUE_MAPPING = {
     'JupiterLeagueBelgium': 'B1',
     'LigueOneFrancia': 'F1',
     'TurkeyLeague': 'T1',
-    'PortugalLeague': 'P1'  # Código estándar para Serie A (Italia)
+    'PortugalLeague': 'P1',
+    'ChampionsLeague': 'CL'  # Champions League
 }
 
 def get_league_code(filepath):
@@ -514,12 +515,23 @@ def get_rolling_stats(df, n_games=5):
     return df
 
 if __name__ == "__main__":
+    # Transformar Champions League si es necesario
+    print("[PREP] Verificando formato de Champions League...")
+    try:
+        from transform_champions_league import transform_champions_league
+        if transform_champions_league():
+            print("[OK] Champions League transformado")
+    except Exception as e:
+        print(f"[WARN] Champions League: {str(e)}")
+    
     path = os.path.join('data', '**', '*.csv')
     # CARGAR TODO para MEMORIA HISTÓRICA + EWM para SENSIBILIDAD ACTUAL
     # No filtramos por 25-26 porque queremos que el modelo vea:
     # - 3800+ partidos para entender patrones generales del fútbol
     # - EWM automáticamente ponderará MÁS los recientes, menos los antiguos
-    files = [f for f in glob.glob(path, recursive=True) if 'dataset_final.csv' not in f]
+    files = [f for f in glob.glob(path, recursive=True) 
+             if 'dataset_final.csv' not in f 
+             and 'champions_league_matches' not in f]  # Ignorar archivo original sin transformar
     
     print(f"[DATA] Cargando dataset completo (MEMORIA + EWM):")
     print(f"   Total de archivos: {len(files)}")
@@ -547,8 +559,18 @@ if __name__ == "__main__":
     # Esto ayuda al modelo a entender: "Los datos recientes son más relevantes"
     final_data['temporal_weight'] = np.exp(-final_data['days_since_match'] / 365)
     
+    # Rellenar valores por defecto para ligas que no tienen ciertos datos (ej: Champions League)
+    # HC, AC (Corners): rellenar con promedio o 0
+    final_data['HC'] = final_data['HC'].fillna(final_data['HC'].mean() or 5.0)
+    final_data['AC'] = final_data['AC'].fillna(final_data['AC'].mean() or 5.0)
+    # HS, AS (Shots): rellenar con promedio
+    final_data['HS'] = final_data['HS'].fillna(final_data['HS'].mean() or 12.0)
+    final_data['AS'] = final_data['AS'].fillna(final_data['AS'].mean() or 12.0)
+    
     # Limpieza de seguridad para el entrenamiento
-    final_data.dropna(subset=['AvgH', 'HC', 'HS']).to_csv('data/dataset_final.csv', index=False)
+    # Solo requerir columnas absolutamente críticas (resultados y cuotas)
+    final_data = final_data.dropna(subset=['AvgH', 'AvgD', 'AvgA', 'FTHG', 'FTAG', 'FTR'])
+    final_data.to_csv('data/dataset_final.csv', index=False)
     print(f"[OK] Dataset Multi-Año (EWM + Peso Temporal) generado:")
     print(f"   Total partidos: {len(final_data)}")
     print(f"   Rango: {final_data['Date'].min().date()} a {final_data['Date'].max().date()}")
