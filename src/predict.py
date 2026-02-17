@@ -139,6 +139,11 @@ def predict_final_boss(local=None, visitante=None, h=None, d=None, a=None, match
     model_features = m_res.feature_names_in_
     input_dict = {}
 
+    # Helper: obtener valor de una Serie, devolviendo default si es NaN
+    def safe_get(row, col, default=0):
+        val = row.get(col, default)
+        return val if pd.notna(val) else default
+
     # 3. CONSTRUCCIÓN DEL VECTOR (Compatible con el nuevo Preprocessor)
     sum_inv = (1/h) + (1/d) + (1/a) # Para Market Prob
     
@@ -157,19 +162,18 @@ def predict_final_boss(local=None, visitante=None, h=None, d=None, a=None, match
 
         # C. Datos de Local (Home) y Visitante (Away)
         elif '_Home' in col:
-            # Si la columna existe en h_row (incluyendo las nuevas _Role y _Opp)
-            input_dict[col] = h_row.get(col, 0)
+            input_dict[col] = safe_get(h_row, col, 0)
         elif '_Away' in col:
-            input_dict[col] = a_row[col] if col in a_row else 0
+            input_dict[col] = safe_get(a_row, col, 0)
             
         # D. Diferencias y totales (diff_ / exp_)
         elif 'diff_' in col or 'exp_' in col:
-            # Intentamos obtener el valor calculado en el preprocessor del local
-            input_dict[col] = h_row.get(col, 0)
+            input_dict[col] = safe_get(h_row, col, 0)
         else:
             input_dict[col] = 0.0
 
     X_in = pd.DataFrame([input_dict])[model_features]
+    X_in = X_in.fillna(0)  # Seguro final: ningún NaN llega a los modelos
 
     # 4. PREDICCIONES
     prob_1x2 = m_res.predict_proba(X_in)[0]
@@ -179,8 +183,8 @@ def predict_final_boss(local=None, visitante=None, h=None, d=None, a=None, match
     
     # 5. REPARTO DINÁMICO (Usando los nuevos Shares del Preprocessor)
     # Tomamos el share del local en su último partido en casa
-    share_c = h_row.get('Corner_Share_Home', 0.5)
-    share_s = h_row.get('Shot_Share_Home', 0.5)
+    share_c = safe_get(h_row, 'Corner_Share_Home', 0.5)
+    share_s = safe_get(h_row, 'Shot_Share_Home', 0.5)
     
     def get_p(mu, line): return (1 - poisson.cdf(line, mu)) * 100
 
