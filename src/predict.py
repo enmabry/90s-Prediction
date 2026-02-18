@@ -169,7 +169,7 @@ def predict_final_boss(local=None, visitante=None, h=None, d=None, a=None, match
     sum_inv = (1/h) + (1/d) + (1/a) # Para Market Prob
     
     for col in model_features:
-        # A. Probabilidades de Mercado (Nuevas en el Train)
+        # A. Probabilidades de Mercado
         if 'Market_Prob' in col:
             if '_H' in col: input_dict[col] = (1/h) / sum_inv
             elif '_D' in col: input_dict[col] = (1/d) / sum_inv
@@ -181,31 +181,68 @@ def predict_final_boss(local=None, visitante=None, h=None, d=None, a=None, match
         elif 'AvgA' in col: input_dict[col] = a
         elif 'Odds_Std' in col: input_dict[col] = np.std([h, d, a])
 
-        # C. Liga como feature (#1)
+        # C. Liga como feature
         elif col == 'is_CL': input_dict[col] = 1 if match_league == 'CL' else 0
         elif col.startswith('is_'): input_dict[col] = 1 if match_league == col[3:] else 0
         
-        # D. Días de descanso (#4) - default 4 para CL (entre semana), 7 para doméstica
+        # D. Días de descanso — 4 para CL (entre semana), 7 para doméstica
         elif col == 'home_rest_days': input_dict[col] = 4.0 if match_league == 'CL' else 7.0
         elif col == 'away_rest_days': input_dict[col] = 4.0 if match_league == 'CL' else 7.0
 
-        # E. Datos de Local (Home) y Visitante (Away)
-        elif '_Home' in col:
+        # E. H2H features — usar datos REALES del enfrentamiento actual
+        elif col.startswith('H2H_'):
+            h2h_n = h2h.get('h2h_matches', 0)
+            if col == 'H2H_Total': input_dict[col] = h2h_n
+            elif col == 'H2H_Draws': input_dict[col] = h2h.get('h2h_draws', 0)
+            elif col == 'H2H_Home_Wins': input_dict[col] = h2h.get('h2h_wins_a', 0)
+            elif col == 'H2H_Away_Wins': input_dict[col] = h2h.get('h2h_wins_b', 0)
+            elif col == 'H2H_Home_Win_Rate': input_dict[col] = h2h.get('h2h_wins_a', 0) / max(h2h_n, 1)
+            elif col == 'H2H_Away_Win_Rate': input_dict[col] = h2h.get('h2h_wins_b', 0) / max(h2h_n, 1)
+            else: input_dict[col] = 0
+
+        # F. Datos HOME (Home_ prefix + _Home suffix)
+        elif col.startswith('Home') or '_Home' in col:
             input_dict[col] = safe_get(h_row, col, 0)
-        elif '_Away' in col:
+        
+        # G. Datos AWAY (Away_ prefix + _Away suffix)
+        elif col.startswith('Away') or '_Away' in col:
+            input_dict[col] = safe_get(a_row, col, 0)
+        
+        # H. Features con indicador home/away en minúsculas (opponent_*_home, etc.)
+        elif 'home' in col.lower():
+            input_dict[col] = safe_get(h_row, col, 0)
+        elif 'away' in col.lower():
             input_dict[col] = safe_get(a_row, col, 0)
             
-        # F. Diferencias y totales (diff_ / exp_)
+        # I. Diferencias y totales (diff_ / exp_)
         elif 'diff_' in col or 'exp_' in col:
             input_dict[col] = safe_get(h_row, col, 0)
+        
+        # J. Fallback: intentar desde h_row (temporal_weight, Points_Diff, etc.)
         else:
-            input_dict[col] = 0.0
+            input_dict[col] = safe_get(h_row, col, 0.0)
 
     X_in = pd.DataFrame([input_dict])[model_features]
     X_in = X_in.fillna(0)  # Seguro final: ningún NaN llega a los modelos
 
     # 4. PREDICCIONES
-    prob_1x2 = m_res.predict_proba(X_in)[0]
+    prob_1x2_raw = m_res.predict_proba(X_in)[0]
+    
+    # Calibración: suavizar probabilidades extremas con temperature scaling
+    # p_cal = p^(1/T) / sum(p^(1/T)) — T>1 reduce overconfidence
+    def calibrate_probs(probs, temperature):
+        p_cal = np.power(np.clip(probs, 1e-10, 1), 1.0 / temperature)
+        return p_cal / p_cal.sum()
+    
+    market_probs = np.array([(1/h)/sum_inv, (1/d)/sum_inv, (1/a)/sum_inv])
+    if match_league == 'CL':
+        # CL: modelo entrenado con 97% doméstico → calibrar fuerte + dar peso al mercado
+        prob_cal = calibrate_probs(prob_1x2_raw, temperature=3.0)
+        prob_1x2 = 0.20 * prob_cal + 0.80 * market_probs
+    else:
+        # Doméstica: calibrar suave + confiar más en modelo
+        prob_cal = calibrate_probs(prob_1x2_raw, temperature=1.5)
+        prob_1x2 = 0.60 * prob_cal + 0.40 * market_probs
     mu_c = m_corn.predict(X_in)[0]
     mu_s = m_shots.predict(X_in)[0]
     mu_t = m_target.predict(X_in)[0]
@@ -225,16 +262,25 @@ def predict_final_boss(local=None, visitante=None, h=None, d=None, a=None, match
         mu_hst_direct = m_hst.predict(X_sep)[0]
         mu_ast_direct = m_ast.predict(X_sep)[0]
     
-    # 5. REPARTO DINÁMICO (Usando los nuevos Shares del Preprocessor)
-    # Tomamos el share del local en su último partido en casa
-    share_c = safe_get(h_row, 'Corner_Share_Home', 0.5)
-    share_s = safe_get(h_row, 'Shot_Share_Home', 0.5)
+    # 5. REPARTO DINÁMICO
+    # Calcular shares de los rolling stats reales de AMBOS equipos (no de una sola fila)
+    h_roll_s = safe_get(h_row, 'rolling_S_5_Role_Home', 0)
+    a_roll_s = safe_get(a_row, 'rolling_S_5_Role_Away', 0)
+    h_roll_c = safe_get(h_row, 'rolling_C_5_Role_Home', 0)
+    a_roll_c = safe_get(a_row, 'rolling_C_5_Role_Away', 0)
+    
+    share_s = h_roll_s / (h_roll_s + a_roll_s) if (h_roll_s + a_roll_s) > 0 else 0.5
+    share_c = h_roll_c / (h_roll_c + a_roll_c) if (h_roll_c + a_roll_c) > 0 else 0.5
+    
+    # Clamp entre 0.25-0.75 para evitar extremos
+    share_s = np.clip(share_s, 0.25, 0.75)
+    share_c = np.clip(share_c, 0.25, 0.75)
     
     # 5B. AJUSTE CL: Corregir predicciones con promedios reales de CL
     cl_adj_applied = False
     if match_league == 'CL':
-        h_cl = get_cl_stats(df, local, as_home=True)
-        a_cl = get_cl_stats(df, visitante, as_home=False)
+        h_cl = get_cl_stats(df, local, as_home=True, exclude_opponent=visitante)
+        a_cl = get_cl_stats(df, visitante, as_home=False, exclude_opponent=local)
         
         if h_cl and a_cl:
             min_n = min(h_cl['cl_n'], a_cl['cl_n'])

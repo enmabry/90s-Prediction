@@ -378,10 +378,11 @@ def get_team_data_with_context(df, team_name, as_home=True, match_league='CL'):
     return None
 
 
-def get_cl_stats(df, team_name, as_home=True):
+def get_cl_stats(df, team_name, as_home=True, exclude_opponent=None):
     """
     Obtiene promedios REALES de un equipo en Champions League (home o away).
     Sirve para corregir la predicción del modelo en partidos CL.
+    exclude_opponent: excluir partidos contra este rival (evita data leakage)
     
     Returns:
         dict: {
@@ -395,9 +396,13 @@ def get_cl_stats(df, team_name, as_home=True):
     
     if as_home:
         team_cl = cl_data[cl_data['HomeTeam'] == team_name]
+        if exclude_opponent:
+            team_cl = team_cl[team_cl['AwayTeam'] != exclude_opponent]
         shots_col, st_col, c_col = 'HS', 'HST', 'HC'
     else:
         team_cl = cl_data[cl_data['AwayTeam'] == team_name]
+        if exclude_opponent:
+            team_cl = team_cl[team_cl['HomeTeam'] != exclude_opponent]
         shots_col, st_col, c_col = 'AS', 'AST', 'AC'
     
     if team_cl.empty:
