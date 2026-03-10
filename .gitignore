@@ -21,6 +21,9 @@ __pycache__/
 *.swp
 *.swo
 
+# Ignorar archivos de configuración con API keys
+.env
+
 # Ignorar modelos entrenados (opcional, descomenta si quieres ignorarlos)
 # models/
 

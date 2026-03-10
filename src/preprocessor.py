@@ -262,6 +262,28 @@ def get_rolling_stats(df, n_games=5):
             lambda x: x.rolling(window=n_games, min_periods=1).std().shift(1)
         )
 
+    # ============ MEJORA RÁPIDA #1: EWM CON MÁS PESO RECIENTE (alpha=0.3) ============
+    # Promedio móvil exponencial con alpha más alto para dar MÁS peso a los últimos 2-3 partidos
+    # Alpha 0.3 = decaimiento rápido; últimos 3 partidos pesan ~70% del total
+    # ÚTIL PARA: Capturar cambios de forma súbitos (lesiones clave, cambios tácticos)
+    combined['EWM_Shots'] = combined.groupby('Team')['S'].transform(
+        lambda x: x.ewm(alpha=0.3, adjust=False).mean().shift(1)
+    )
+    combined['EWM_Shots_Target'] = combined.groupby('Team')['ST'].transform(
+        lambda x: x.ewm(alpha=0.3, adjust=False).mean().shift(1)
+    )
+    combined['EWM_Corners'] = combined.groupby('Team')['C'].transform(
+        lambda x: x.ewm(alpha=0.3, adjust=False).mean().shift(1)
+    )
+    
+    # Por rol (Home/Away) también
+    combined['EWM_Shots_Role'] = combined.groupby(['Team', 'IsHome'])['S'].transform(
+        lambda x: x.ewm(alpha=0.3, adjust=False).mean().shift(1)
+    )
+    combined['EWM_Shots_Target_Role'] = combined.groupby(['Team', 'IsHome'])['ST'].transform(
+        lambda x: x.ewm(alpha=0.3, adjust=False).mean().shift(1)
+    )
+
     # ============ MEJORA #3: TENDENCIA DE TIROS (SLOPE) ============
     # Detecta si un equipo dispara cada vez más o menos en sus últimos partidos
     # Slope positivo = tendencia al alza, negativo = a la baja
@@ -292,6 +314,31 @@ def get_rolling_stats(df, n_games=5):
     df['diff_Shots'] = df[f'rolling_S_{n_games}_Home'] - df[f'rolling_S_{n_games}_Away']
     df['exp_Total_Corners'] = df[f'rolling_C_{n_games}_Home'] + df[f'rolling_C_{n_games}_Away']
     df['exp_Total_Shots'] = df[f'rolling_S_{n_games}_Home'] + df[f'rolling_S_{n_games}_Away']
+    
+    # ============ MEJORA RÁPIDA #2: HOME ADVANTAGE FACTOR (Factor de Localía Real) ============
+    # Calcula la diferencia promedio entre tiros en casa vs fuera para cada equipo
+    # Positivo = equipo se potencia en casa; Negativo = rinde igual o mejor fuera
+    # ÚTIL PARA: Identificar equipos que dependen mucho de su estadio
+    
+    # Calcular promedios de tiros por equipo y localía
+    home_avg_shots = combined[combined['IsHome'] == 1].groupby('Team')['S'].mean()
+    away_avg_shots = combined[combined['IsHome'] == 0].groupby('Team')['S'].mean()
+    home_advantage_map = (home_avg_shots - away_avg_shots).to_dict()
+    
+    # Mapear al dataframe
+    df['Home_Advantage_Factor_Home'] = df['HomeTeam'].map(home_advantage_map).fillna(0)
+    df['Home_Advantage_Factor_Away'] = df['AwayTeam'].map(home_advantage_map).fillna(0)
+    
+    # Ventaja neta del partido (qué equipo tiene más ventaja por jugar en casa)
+    df['Net_Home_Advantage'] = df['Home_Advantage_Factor_Home'] - df['Home_Advantage_Factor_Away']
+    
+    # Lo mismo para tiros a puerta (precisión según localía)
+    home_avg_shots_target = combined[combined['IsHome'] == 1].groupby('Team')['ST'].mean()
+    away_avg_shots_target = combined[combined['IsHome'] == 0].groupby('Team')['ST'].mean()
+    home_advantage_target_map = (home_avg_shots_target - away_avg_shots_target).to_dict()
+    
+    df['Home_Advantage_Target_Home'] = df['HomeTeam'].map(home_advantage_target_map).fillna(0)
+    df['Home_Advantage_Target_Away'] = df['AwayTeam'].map(home_advantage_target_map).fillna(0)
     
     # Corner Share: Qué porcentaje de corners suele aportar cada equipo
     df['Corner_Share_Home'] = df[f'rolling_C_{n_games}_Home'] / (df[f'rolling_C_{n_games}_Home'] + df[f'rolling_C_{n_games}_Away']).replace(0, 1)
@@ -444,6 +491,10 @@ def get_rolling_stats(df, n_games=5):
     df['H2H_Total'] = df['H2H_Home_Wins'] + df['H2H_Away_Wins'] + df['H2H_Draws']
     df['H2H_Home_Win_Rate'] = df['H2H_Home_Wins'] / (df['H2H_Total'].replace(0, 1))
     df['H2H_Away_Win_Rate'] = df['H2H_Away_Wins'] / (df['H2H_Total'].replace(0, 1))
+    
+    # CONSOLIDADO: H2H_Dominance = (wins_home - wins_away) / total
+    # Rango: -1 (visitante domina) a +1 (local domina), 0 = equilibrado
+    df['H2H_Dominance'] = (df['H2H_Home_Wins'] - df['H2H_Away_Wins']) / (df['H2H_Total'].replace(0, 1))
     
     # ============ PASO 9: TEAM AGGRESSION SCORE (Agresividad Ofensiva) ============
     # Mide QUÉ TAN AGRESIVO es un equipo ofensivamente

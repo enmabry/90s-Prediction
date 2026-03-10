@@ -22,6 +22,36 @@ Un **sistema de predicción contextual** que analiza datos históricos de partid
 - **Ventaja de localía** (home advantage)  
 - **Búsqueda de equipos** para facilitar el manejo  
 
+## Instalación
+
+1. Clonar el repositorio
+2. Instalar dependencias:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+## Actualización de Datos
+
+Para mantener actualizado el dataset con los últimos partidos:
+
+1. **Configurar API Key** (opcional):
+   - Copia `.env.example` a `.env`
+   - Añade tu API key de Sofascore (RapidAPI)
+   - Si no configuras el .env, usa la clave por defecto
+
+2. **Ejecutar actualización**:
+   ```bash
+   python src/update_dataset.py
+   ```
+
+Este script:
+- Descarga automáticamente los últimos partidos de todas las ligas configuradas
+- Evita duplicados
+- Actualiza los archivos CSV de cada liga
+- Incluye estadísticas completas: tiros, tiros a puerta, corners, faltas, tarjetas
+
+**Ligas soportadas**: Champions League, Premier League, LaLiga, Bundesliga, Serie A, Ligue 1
+
 ## Uso
 
 ```bash

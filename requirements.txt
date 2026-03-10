@@ -7,3 +7,4 @@ scipy          # Funciones estadísticas (Poisson)
 openpyxl       # Exportar a Excel
 rich           # Interfaz profesional de consola
 joblib         # Persistencia de modelos
+requests       # Para hacer peticiones a APIs

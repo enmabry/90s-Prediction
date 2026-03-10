@@ -43,9 +43,10 @@ def train_dynamic_brain():
                    'Position_Diff' in c or 'Points_Diff' in c or 'GD_Diff' in c or 'Quality' in c]
     features += position_gap
     
-    # 9. HEAD-TO-HEAD RECIENTE (Nuevas métricas - Paso 8)
-    h2h_features = [c for c in df.columns if 'H2H_' in c]
-    features += h2h_features
+    # 9. HEAD-TO-HEAD RECIENTE (Consolidado: solo H2H_Dominance)
+    # ANTES: 6 features redundantes que dominaban 50% del modelo
+    # AHORA: 1 feature compacta (-1 a +1) que no puede dominar
+    features += ['H2H_Dominance']
     
     # 10. TEAM AGGRESSION SCORE (Nuevas métricas - Paso 9)
     # Agresividad ofensiva + defensiva + predicciones mejoradas
@@ -97,7 +98,7 @@ def train_dynamic_brain():
     print(f"   - Attacking Momentum: {len([f for f in features if 'Shot_Accuracy' in f or 'Pressure_Index' in f])}")
     print(f"   - Defense Fatigue: {len([f for f in features if 'Shot_Advantage' in f or 'Expectancy' in f])}")
     print(f"   - Position Gap: {len([f for f in features if 'Diff' in f or 'Quality' in f])}")
-    print(f"   - H2H: {len([f for f in features if 'H2H_' in f])}")
+    print(f"   - H2H: {len([f for f in features if 'H2H_' in f])} (consolidado: H2H_Dominance)")
     print(f"   - Aggression/Expected: {len([f for f in features if 'Aggression' in f or 'Offensive' in f or 'Permissiveness' in f or 'Expected_' in f or 'Consistency' in f])}")
     print(f"   - Opposition Defense: {len([f for f in features if 'Defensive_Vulnerability' in f or 'Defensive_Pressing' in f or 'Attacking_vs_' in f or 'V2' in f])}")
     print(f"   - Possession: {len([f for f in features if 'Possession' in f or 'Poss' in f])}")
@@ -107,14 +108,18 @@ def train_dynamic_brain():
     
     X = df[features]
 
-    # --- CONFIGURACIÓN DE MODELO MÁS PROFUNDO ---
-    # Usamos 150 estimadores y un learning_rate de 0.03 para mayor precisión
+    # --- CONFIGURACIÓN DEL MODELO ---
+    # Regularizado para evitar sobreajuste a calidad histórica (Position/H2H)
+    # max_depth=4 (+reg) → árboles más simples, predicciones menos extremas
     model_params = {
-        'n_estimators': 150,
-        'learning_rate': 0.03,
-        'max_depth': 6,
+        'n_estimators': 200,
+        'learning_rate': 0.05,
+        'max_depth': 4,
+        'min_child_weight': 5,
         'subsample': 0.8,
-        'colsample_bytree': 0.8,
+        'colsample_bytree': 0.7,
+        'reg_alpha': 0.1,       # L1: fuerza esparsidad (ignora features débiles)
+        'reg_lambda': 2.0,      # L2: penaliza pesos extremos
         'random_state': 42
     }
 

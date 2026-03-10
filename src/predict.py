@@ -49,7 +49,7 @@ def calcular_kelly(prob_ia, cuota, banca_total=100, instabilidad=0):
     monto_recom = banca_total * f_frac * stability_factor
     return monto_recom
 
-def predict_final_boss(local=None, visitante=None, h=None, d=None, a=None, match_league=None):
+def predict_final_boss(local=None, visitante=None, h=None, d=None, a=None, match_league=None, h2h_weight=1.0):
     """
     Sistema de predicción contextual.
     
@@ -60,6 +60,7 @@ def predict_final_boss(local=None, visitante=None, h=None, d=None, a=None, match
         d (float, optional): Cuota para el empate
         a (float, optional): Cuota para el visitante
         match_league (str, optional): Liga del partido (ej: 'CL', 'E0') para contexto
+        h2h_weight (float, optional): Factor para atenuar H2H (0.0=ignorar, 1.0=normal, 0.5=reducir 50%)
     """
     # 1. Carga de recursos
     try:
@@ -189,15 +190,24 @@ def predict_final_boss(local=None, visitante=None, h=None, d=None, a=None, match
         elif col == 'home_rest_days': input_dict[col] = 4.0 if match_league == 'CL' else 7.0
         elif col == 'away_rest_days': input_dict[col] = 4.0 if match_league == 'CL' else 7.0
 
-        # E. H2H features — usar datos REALES del enfrentamiento actual
-        elif col.startswith('H2H_'):
+        # E. H2H features — CONSOLIDADO: solo H2H_Dominance
+        # Rango: -1 (visitante domina) a +1 (local domina)
+        elif col == 'H2H_Dominance':
             h2h_n = h2h.get('h2h_matches', 0)
-            if col == 'H2H_Total': input_dict[col] = h2h_n
-            elif col == 'H2H_Draws': input_dict[col] = h2h.get('h2h_draws', 0)
-            elif col == 'H2H_Home_Wins': input_dict[col] = h2h.get('h2h_wins_a', 0)
-            elif col == 'H2H_Away_Wins': input_dict[col] = h2h.get('h2h_wins_b', 0)
-            elif col == 'H2H_Home_Win_Rate': input_dict[col] = h2h.get('h2h_wins_a', 0) / max(h2h_n, 1)
-            elif col == 'H2H_Away_Win_Rate': input_dict[col] = h2h.get('h2h_wins_b', 0) / max(h2h_n, 1)
+            if h2h_n > 0:
+                dominance = (h2h.get('h2h_wins_a', 0) - h2h.get('h2h_wins_b', 0)) / h2h_n
+                input_dict[col] = dominance * h2h_weight
+            else:
+                input_dict[col] = 0
+        elif col.startswith('H2H_'):
+            # Legacy: si el modelo aún tiene features H2H viejas (compatibilidad)
+            h2h_n = h2h.get('h2h_matches', 0)
+            if col == 'H2H_Total': input_dict[col] = h2h_n * h2h_weight
+            elif col == 'H2H_Draws': input_dict[col] = h2h.get('h2h_draws', 0) * h2h_weight
+            elif col == 'H2H_Home_Wins': input_dict[col] = h2h.get('h2h_wins_a', 0) * h2h_weight
+            elif col == 'H2H_Away_Wins': input_dict[col] = h2h.get('h2h_wins_b', 0) * h2h_weight
+            elif col == 'H2H_Home_Win_Rate': input_dict[col] = (h2h.get('h2h_wins_a', 0) / max(h2h_n, 1)) * h2h_weight
+            elif col == 'H2H_Away_Win_Rate': input_dict[col] = (h2h.get('h2h_wins_b', 0) / max(h2h_n, 1)) * h2h_weight
             else: input_dict[col] = 0
 
         # F. Datos HOME (Home_ prefix + _Home suffix)
@@ -222,6 +232,150 @@ def predict_final_boss(local=None, visitante=None, h=None, d=None, a=None, match
         else:
             input_dict[col] = safe_get(h_row, col, 0.0)
 
+    # ═══════════════════════════════════════════════════════════════════
+    # RECÁLCULO DE FEATURES CRUZADAS (dependen de AMBOS equipos)
+    # Las features cruzadas en h_row/a_row son del ÚLTIMO partido de cada
+    # equipo contra un rival DISTINTO. Aquí las recalculamos para el 
+    # matchup ACTUAL (local vs visitante).
+    # ═══════════════════════════════════════════════════════════════════
+    
+    # Extraer rolling stats de cada equipo (datos per-team, estos SÍ son correctos)
+    rs_h = safe_get(h_row, 'rolling_S_5_Home', 10)    # Tiros local
+    rs_a = safe_get(a_row, 'rolling_S_5_Away', 10)    # Tiros visitante
+    rc_h = safe_get(h_row, 'rolling_C_5_Home', 5)     # Corners local
+    rc_a = safe_get(a_row, 'rolling_C_5_Away', 5)     # Corners visitante
+    rst_h = safe_get(h_row, 'rolling_ST_5_Home', 4)   # Tiros a puerta local
+    rst_a = safe_get(a_row, 'rolling_ST_5_Away', 4)   # Tiros a puerta visitante
+    ros_h = safe_get(h_row, 'rolling_OppS_5_Home', 10)   # Tiros que RECIBE el local
+    ros_a = safe_get(a_row, 'rolling_OppS_5_Away', 10)   # Tiros que RECIBE el visitante
+    roc_h = safe_get(h_row, 'rolling_OppC_5_Home', 5)    # Corners que RECIBE local
+    roc_a = safe_get(a_row, 'rolling_OppC_5_Away', 5)    # Corners que RECIBE visitante
+    rost_h = safe_get(h_row, 'rolling_OppST_5_Home', 4)  # Tiros a puerta que RECIBE local
+    rost_a = safe_get(a_row, 'rolling_OppST_5_Away', 4)  # Tiros a puerta que RECIBE visitante
+    rs_role_h = safe_get(h_row, 'rolling_S_5_Role_Home', rs_h)
+    rs_role_a = safe_get(a_row, 'rolling_S_5_Role_Away', rs_a)
+    
+    # --- PASO 6: Defense Fatigue (cruzar ofensiva vs defensa del RIVAL ACTUAL) ---
+    # Shot Advantage: mis tiros vs lo que concede EL RIVAL ACTUAL
+    cross_fixes = {}
+    cross_fixes['Home_vs_Away_Shot_Advantage'] = (rs_h - ros_a) / 2
+    cross_fixes['Away_vs_Home_Shot_Advantage'] = (rs_a - ros_h) / 2
+    # Match Shot Expectancy: promedio de mi ataque + defensa del rival actual
+    cross_fixes['Match_Shot_Expectancy_Home'] = (rs_h + ros_a) / 2
+    cross_fixes['Match_Shot_Expectancy_Away'] = (rs_a + ros_h) / 2
+    cross_fixes['Match_Corner_Expectancy_Home'] = (rc_h + roc_a) / 2
+    cross_fixes['Match_Corner_Expectancy_Away'] = (rc_a + roc_h) / 2
+    # Defense Efficiency
+    cross_fixes['Home_Defense_Efficiency'] = (rost_h + 0.1) / (ros_h + 0.1)
+    cross_fixes['Away_Defense_Efficiency'] = (rost_a + 0.1) / (ros_a + 0.1)
+    
+    # --- PASO 7: Position Gap (usar posiciones ACTUALES de la tabla) ---
+    # Buscar posiciones actuales de ambos equipos en la liga
+    def get_current_standings(df, league):
+        """Calcula standings actuales desde los datos del dataset"""
+        league_df = df[df['Div'] == league].copy()
+        if league_df.empty:
+            return {}
+        # Usar solo la temporada más reciente (últimos 12 meses)
+        max_date = league_df['Date'].max()
+        season_start = max_date - pd.Timedelta(days=365)
+        league_df = league_df[league_df['Date'] >= season_start]
+        
+        teams = {}
+        for _, row in league_df.iterrows():
+            ht, at = row['HomeTeam'], row['AwayTeam']
+            hg, ag = row.get('FTHG', 0), row.get('FTAG', 0)
+            ftr = row.get('FTR', 'D')
+            for t in [ht, at]:
+                if t not in teams:
+                    teams[t] = {'points': 0, 'gd': 0}
+            if ftr == 'H':
+                teams[ht]['points'] += 3
+            elif ftr == 'A':
+                teams[at]['points'] += 3
+            else:
+                teams[ht]['points'] += 1
+                teams[at]['points'] += 1
+            teams[ht]['gd'] += (hg - ag) if pd.notna(hg) else 0
+            teams[at]['gd'] += (ag - hg) if pd.notna(ag) else 0
+        
+        sorted_teams = sorted(teams.items(), key=lambda x: (-x[1]['points'], -x[1]['gd']))
+        standings = {}
+        for pos, (team, data) in enumerate(sorted_teams, 1):
+            standings[team] = {'position': pos, 'points': data['points'], 'gd': data['gd']}
+        return standings
+    
+    standings = get_current_standings(df, match_league) if match_league else {}
+    h_standing = standings.get(local, {'position': 10, 'points': 30, 'gd': 0})
+    a_standing = standings.get(visitante, {'position': 10, 'points': 30, 'gd': 0})
+    
+    cross_fixes['Position_Diff'] = h_standing['position'] - a_standing['position']
+    cross_fixes['Points_Diff'] = h_standing['points'] - a_standing['points']
+    cross_fixes['GD_Diff'] = h_standing['gd'] - a_standing['gd']
+    
+    # Quality relativa: usa posiciones actuales, no del último oponente
+    cross_fixes['Home_vs_Away_Quality'] = (h_standing['position'] / (a_standing['position'] + 0.1)) - 1
+    cross_fixes['Away_vs_Home_Quality'] = (a_standing['position'] / (h_standing['position'] + 0.1)) - 1
+    
+    # opponent_position/points/gd: en el contexto actual = datos del rival ACTUAL
+    cross_fixes['opponent_position_home'] = a_standing['position']  # Rival del local = visitante
+    cross_fixes['opponent_position_away'] = h_standing['position']  # Rival del visitante = local
+    cross_fixes['opponent_points_home'] = a_standing['points']
+    cross_fixes['opponent_points_away'] = h_standing['points']
+    cross_fixes['opponent_gd_home'] = a_standing['gd']
+    cross_fixes['opponent_gd_away'] = h_standing['gd']
+    
+    # --- Aggression cruzada: Mi agresión × vulnerabilidad del RIVAL ACTUAL ---
+    h_aggression = safe_get(h_row, 'Home_Aggression_Score', 0.5)
+    a_aggression = safe_get(a_row, 'Away_Aggression_Score', 0.5)
+    h_vuln = safe_get(h_row, 'Home_Defensive_Vulnerability', 0)
+    a_vuln = safe_get(a_row, 'Away_Defensive_Vulnerability', 0)
+    h_perm = safe_get(h_row, 'Home_Defensive_Permissiveness', 0)
+    a_perm = safe_get(a_row, 'Away_Defensive_Permissiveness', 0)
+    
+    cross_fixes['Home_Attacking_vs_Away_Defense'] = h_aggression * (1 + np.clip(a_vuln, -1, 1))
+    cross_fixes['Away_Attacking_vs_Home_Defense'] = a_aggression * (1 + np.clip(h_vuln, -1, 1))
+    
+    # Expected Shots: mi tiro × permisividad del RIVAL ACTUAL
+    cross_fixes['Expected_Shots_Home'] = rs_role_h * (1 + a_perm * 0.5)
+    cross_fixes['Expected_Shots_Away'] = rs_role_a * (1 + h_perm * 0.5)
+    
+    h_accuracy = safe_get(h_row, 'Home_Shot_Accuracy', 0.35)
+    a_accuracy = safe_get(a_row, 'Away_Shot_Accuracy', 0.35)
+    cross_fixes['Expected_ST_Home'] = cross_fixes['Expected_Shots_Home'] * h_accuracy
+    cross_fixes['Expected_ST_Away'] = cross_fixes['Expected_Shots_Away'] * a_accuracy
+    
+    # Expected V2: con vulnerabilidad defensiva del rival actual
+    cross_fixes['Expected_Shots_Home_V2'] = rs_h * (1 + np.clip(a_vuln, -0.5, 0.5) * 0.3)
+    cross_fixes['Expected_Shots_Away_V2'] = rs_a * (1 + np.clip(h_vuln, -0.5, 0.5) * 0.3)
+    
+    # Possession EWM: ratio de tiros ambos equipos ACTUALES
+    total_s = rs_h + rs_a + 0.1
+    cross_fixes['Home_Possession_EWM'] = (rs_h / total_s) * 100
+    cross_fixes['Away_Possession_EWM'] = (rs_a / total_s) * 100
+    
+    # Expected con posesión
+    cross_fixes['Expected_Shots_Home_With_Possession'] = (
+        cross_fixes['Expected_Shots_Home_V2'] * (1 + (cross_fixes['Home_Possession_EWM'] - 50) / 100)
+    )
+    cross_fixes['Expected_Shots_Away_With_Possession'] = (
+        cross_fixes['Expected_Shots_Away_V2'] * (1 + (cross_fixes['Away_Possession_EWM'] - 50) / 100)
+    )
+    cross_fixes['Expected_ST_Home_Possession'] = cross_fixes['Expected_ST_Home'] * (1 + (cross_fixes['Home_Possession_EWM'] - 50) / 100)
+    cross_fixes['Expected_ST_Away_Possession'] = cross_fixes['Expected_ST_Away'] * (1 + (cross_fixes['Away_Possession_EWM'] - 50) / 100)
+    
+    # Diff y exp: recalcular con datos cruzados correctos
+    cross_fixes['diff_Shots'] = rs_h - rs_a
+    cross_fixes['exp_Total_Shots'] = rs_h + rs_a
+    cross_fixes['exp_Total_Corners'] = rc_h + rc_a
+    cross_fixes['Shot_Share_Home'] = rs_h / (rs_h + rs_a + 0.1)
+    cross_fixes['Corner_Share_Home'] = rc_h / (rc_h + rc_a + 0.1)
+    
+    # Aplicar correcciones: solo features que existen en el modelo
+    for col, val in cross_fixes.items():
+        if col in input_dict:
+            input_dict[col] = val
+
     X_in = pd.DataFrame([input_dict])[model_features]
     X_in = X_in.fillna(0)  # Seguro final: ningún NaN llega a los modelos
 
@@ -240,9 +394,38 @@ def predict_final_boss(local=None, visitante=None, h=None, d=None, a=None, match
         prob_cal = calibrate_probs(prob_1x2_raw, temperature=3.0)
         prob_1x2 = 0.20 * prob_cal + 0.80 * market_probs
     else:
-        # Doméstica: calibrar suave + confiar más en modelo
+        # Doméstica: modelo regularizado + mercado como ancla
         prob_cal = calibrate_probs(prob_1x2_raw, temperature=1.5)
         prob_1x2 = 0.60 * prob_cal + 0.40 * market_probs
+    
+    # ════════════════════════════════════════════════════════════════════
+    # AJUSTE DE COHERENCIA: MODELO vs MERCADO + FORMA
+    # Si el modelo diverge mucho del mercado Y la forma contradice al modelo,
+    # aplicar corrección. Resuelve predicciones extremas incoherentes.
+    # ════════════════════════════════════════════════════════════════════
+    form_diff = h_form['form_points'] - a_form['form_points']  # >0 = local mejor forma
+    
+    # 1. Ajuste por forma reciente (si hay diferencia significativa)
+    if abs(form_diff) >= 2:
+        form_boost = np.clip(form_diff / 20.0, -0.08, 0.08)  # Max ±8%
+        prob_1x2[0] += form_boost
+        prob_1x2[2] -= form_boost
+    
+    # 2. Ajuste por divergencia extrema modelo↔mercado
+    # Si el modelo da <10% a un equipo pero el mercado da >30%, hay sobreconfianza
+    for idx in [0, 2]:  # Solo local y visitante (no empate)
+        divergence = market_probs[idx] - prob_1x2[idx]
+        if divergence > 0.15:  # Mercado >15% más alto que el modelo
+            correction = divergence * 0.3  # Corregir 30% de la divergencia
+            prob_1x2[idx] += correction
+            other_idx = 2 if idx == 0 else 0
+            prob_1x2[other_idx] -= correction * 0.5
+            prob_1x2[1] -= correction * 0.5  # Distribuir entre empate y oponente
+    
+    # Renormalizar
+    prob_1x2 = np.clip(prob_1x2, 0.02, 0.95)
+    prob_1x2 = prob_1x2 / prob_1x2.sum()
+    
     mu_c = m_corn.predict(X_in)[0]
     mu_s = m_shots.predict(X_in)[0]
     mu_t = m_target.predict(X_in)[0]
@@ -328,6 +511,25 @@ def predict_final_boss(local=None, visitante=None, h=None, d=None, a=None, match
     print(f"║ ⚽ {local.upper()} vs {visitante.upper()} ".ljust(56) + "║")
     print("╠" + "═"*55 + "╣")
     print(f"║ 1X2: L:{prob_1x2[0]*100:.1f}% | X:{prob_1x2[1]*100:.1f}% | V:{prob_1x2[2]*100:.1f}% ".ljust(56) + "║")
+    
+    # DIAGNÓSTICO: Mostrar probabilidades RAW vs MARKET
+    print(f"║ [DEBUG] Modelo puro: L:{prob_1x2_raw[0]*100:.1f}% X:{prob_1x2_raw[1]*100:.1f}% V:{prob_1x2_raw[2]*100:.1f}% ".ljust(56) + "║")
+    print(f"║ [DEBUG] Mercado:     L:{market_probs[0]*100:.1f}% X:{market_probs[1]*100:.1f}% V:{market_probs[2]*100:.1f}% ".ljust(56) + "║")
+    
+    # Mostrar si H2H fue atenuado
+    if h2h_weight < 1.0:
+        print(f"║ [INFO] H2H atenuado al {h2h_weight*100:.0f}% (forma reciente pesa más) ".ljust(56) + "║")
+    
+    # Detectar si H2H está dominando demasiado
+    if h2h['h2h_matches'] >= 3:
+        h2h_diff = abs(h2h['h2h_wins_a'] - h2h['h2h_wins_b'])
+        if h2h_diff >= 2:
+            dominant_team = local if h2h['h2h_wins_a'] > h2h['h2h_wins_b'] else visitante
+            print(f"║ ⚠️  ALERTA: H2H dominante ({dominant_team}, {h2h_diff}+ victorias) ".ljust(56) + "║")
+            if h2h_weight >= 0.9:
+                print(f"║     H2H puede sesgar la predicción ".ljust(56) + "║")
+                print(f"║     💡 Sugerencia: usar h2h_weight=0.3 para balancear ".ljust(56) + "║")
+    
     print("╠" + "═"*55 + "╣")
     
     # FORMA RECIENTE
