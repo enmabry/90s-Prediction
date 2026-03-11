@@ -5,9 +5,9 @@ import sys
 import numpy as np
 from scipy.stats import poisson
 from logger import PredictionLogger
-from team_context import (get_team_data_with_context, get_domestic_league, 
+from team_context import (get_team_data_with_context, get_domestic_league,
                          fill_missing_stats, get_recent_form, get_h2h, resolve_team_name,
-                         get_cl_stats)
+                         get_cl_stats, get_league_role_stats)
 
 def calcular_kelly(prob_ia, cuota, banca_total=100, instabilidad=0):
     """
@@ -119,11 +119,19 @@ def predict_final_boss(local=None, visitante=None, h=None, d=None, a=None, match
             # Fallback: detectar liga más común para los equipos
             h_matches = df[df['HomeTeam'] == local]
             a_matches = df[df['AwayTeam'] == visitante]
-            # Si ambos equipos tienen partidos en CL, probablemente es CL
-            h_cl = df[(df['is_CL'] == 1) & ((df['HomeTeam'] == local) | (df['AwayTeam'] == local))]
-            a_cl = df[(df['is_CL'] == 1) & ((df['HomeTeam'] == visitante) | (df['AwayTeam'] == visitante))]
-            if len(h_cl) >= 2 and len(a_cl) >= 2:
-                match_league = 'CL'
+            # Auto-detectar CL solo si los equipos son de LIGAS DOMÉSTICAS DISTINTAS
+            # (ej: Bayern vs Barcelona → CL; Liverpool vs Man City → E0, no CL)
+            h_cl_games = df[(df['is_CL'] == 1) & ((df['HomeTeam'] == local) | (df['AwayTeam'] == local))]
+            a_cl_games = df[(df['is_CL'] == 1) & ((df['HomeTeam'] == visitante) | (df['AwayTeam'] == visitante))]
+            if len(h_cl_games) >= 2 and len(a_cl_games) >= 2:
+                # Verificar si los equipos tienen la MISMA liga doméstica
+                h_dom = get_domestic_league(local, df)
+                a_dom = get_domestic_league(visitante, df)
+                if h_dom and a_dom and h_dom != a_dom:
+                    # Diferentes ligas domésticas → probablemente CL
+                    match_league = 'CL'
+                elif not h_matches.empty:
+                    match_league = h_matches['Div'].mode()[0]
             elif not h_matches.empty:
                 match_league = h_matches['Div'].mode()[0]
         
@@ -375,8 +383,40 @@ def predict_final_boss(local=None, visitante=None, h=None, d=None, a=None, match
     cross_fixes['exp_Total_Corners'] = rc_h + rc_a
     cross_fixes['Shot_Share_Home'] = rs_h / (rs_h + rs_a + 0.1)
     cross_fixes['Corner_Share_Home'] = rc_h / (rc_h + rc_a + 0.1)
-    
-    # Aplicar correcciones: solo features que existen en el modelo
+
+    # ── RECÁLCULO FEATURES SoT CRUZADAS (para el rival ACTUAL, no el del último partido) ──
+    # Direct_SoT: mis shots × mi propia tasa de conversión a puerta (per-team stat OK)
+    ewm_sot_rate_h = safe_get(h_row, 'EWM_SoT_Rate_Home', 0.3)
+    ewm_sot_rate_a = safe_get(a_row, 'EWM_SoT_Rate_Away', 0.3)
+    # EWM_OppSoT_Rate: cuánto concede el RIVAL en conversión de tiros a puerta
+    ewm_opp_sot_rate_h = safe_get(h_row, 'EWM_OppSoT_Rate_Home', 0.3)  # concesión del LOCAL (útil para visitante)
+    ewm_opp_sot_rate_a = safe_get(a_row, 'EWM_OppSoT_Rate_Away', 0.3)  # concesión del VISITANTE (útil para local)
+    rst_role_h = safe_get(h_row, 'rolling_ST_5_Role_Home', rst_h)
+    rst_role_a = safe_get(a_row, 'rolling_ST_5_Role_Away', rst_a)
+    # Direct: mis shots × mi tasa de conversión
+    cross_fixes['Direct_SoT_Home'] = rs_role_h * ewm_sot_rate_h
+    cross_fixes['Direct_SoT_Away'] = rs_role_a * ewm_sot_rate_a
+    # Cross: mis shots × tasa de concesión del RIVAL ACTUAL (recalculado correctamente)
+    cross_fixes['Cross_SoT_Home'] = rs_role_h * ewm_opp_sot_rate_a
+    cross_fixes['Cross_SoT_Away'] = rs_role_a * ewm_opp_sot_rate_h
+    # SoT_Expectancy: blend 60/40
+    cross_fixes['SoT_Expectancy_Home'] = 0.6 * cross_fixes['Direct_SoT_Home'] + 0.4 * cross_fixes['Cross_SoT_Home']
+    cross_fixes['SoT_Expectancy_Away'] = 0.6 * cross_fixes['Direct_SoT_Away'] + 0.4 * cross_fixes['Cross_SoT_Away']
+    # Conceded_SoT: tiros a puerta que RECIBE cada equipo en su rol (per-team, OK desde fila)
+    conc_h = safe_get(h_row, 'Conceded_SoT_Home', rost_h)
+    conc_a = safe_get(a_row, 'Conceded_SoT_Away', rost_a)
+    cross_fixes['Conceded_SoT_Home'] = conc_h
+    cross_fixes['Conceded_SoT_Away'] = conc_a
+    # SoT_Dominance: mi expectativa de ataque / lo que concede el RIVAL ACTUAL
+    cross_fixes['SoT_Dominance_Home'] = cross_fixes['SoT_Expectancy_Home'] / (conc_a + 0.5)
+    cross_fixes['SoT_Dominance_Away'] = cross_fixes['SoT_Expectancy_Away'] / (conc_h + 0.5)
+    # Fast_SoT / Fast_Shots: son per-team rolling (alfa=0.4), correctos desde cada fila
+    cross_fixes['Fast_SoT_Home']   = safe_get(h_row, 'Fast_SoT_Home',   rst_role_h)
+    cross_fixes['Fast_SoT_Away']   = safe_get(a_row, 'Fast_SoT_Away',   rst_role_a)
+    cross_fixes['Fast_Shots_Home'] = safe_get(h_row, 'Fast_Shots_Home', rs_role_h)
+    cross_fixes['Fast_Shots_Away'] = safe_get(a_row, 'Fast_Shots_Away', rs_role_a)
+
+    # Aplicar a input_dict (modelo 1X2) y además construir shots_ext ya con los valores frescos
     for col, val in cross_fixes.items():
         if col in input_dict:
             input_dict[col] = val
@@ -432,9 +472,8 @@ def predict_final_boss(local=None, visitante=None, h=None, d=None, a=None, match
     prob_1x2 = prob_1x2 / prob_1x2.sum()
     
     # Construir X_shots_in con las features propias de los modelos de tiros
-    # (entrenados con shots_priority + nuevas features SoT Rate)
     shots_model_features = m_corn.feature_names_in_
-    shots_ext = dict(input_dict)  # copiar features base
+    shots_ext = dict(input_dict)  # base con features del modelo 1X2
     for col in shots_model_features:
         if col not in shots_ext:
             if '_Home' in col:
@@ -443,6 +482,10 @@ def predict_final_boss(local=None, visitante=None, h=None, d=None, a=None, match
                 shots_ext[col] = safe_get(a_row, col, 0.0)
             else:
                 shots_ext[col] = safe_get(h_row, col, 0.0)
+    # Sobreescribir con cross_fixes (valores recalculados para el rival ACTUAL)
+    # Esto elimina los valores rancios de h_row/a_row que usaban al oponente anterior
+    for col, val in cross_fixes.items():
+        shots_ext[col] = val
     X_shots_in = pd.DataFrame([shots_ext])[shots_model_features].fillna(0)
 
     mu_c = m_corn.predict(X_shots_in)[0]
@@ -517,7 +560,42 @@ def predict_final_boss(local=None, visitante=None, h=None, d=None, a=None, match
                 print(f"   HS directo: {mu_hs_direct:.1f} | AS directo: {mu_as_direct:.1f}")
                 print(f"   HST directo: {mu_hst_direct:.1f} | AST directo: {mu_ast_direct:.1f}")
             print(f"   Datos CL: {local} {h_cl['cl_n']}p(H), {visitante} {a_cl['cl_n']}p(A)")
-    
+
+    # 5D. AJUSTE LIGA DOMÉSTICA: usa stats reales del equipo SOLO en esa liga/rol
+    # Para equipos que juegan también CL, su rolling puede estar sesgado por CL
+    if match_league and match_league != 'CL' and not cl_adj_applied:
+        # Resolver alias de nombres para la búsqueda en liga doméstica
+        local_res = resolve_team_name(local, df)
+        visitante_res = resolve_team_name(visitante, df)
+        h_lg = get_league_role_stats(df, local_res, match_league, as_home=True,
+                                     n_games=8, exclude_opponent=visitante_res)
+        a_lg = get_league_role_stats(df, visitante_res, match_league, as_home=False,
+                                     n_games=8, exclude_opponent=local_res)
+        if h_lg and a_lg:
+            min_n = min(h_lg['n'], a_lg['n'])
+            # Peso bajo: el modelo ya conoce estos datos domain-specific
+            # Solo corrige sesgos por mezcla con otras competiciones
+            lg_weight = 0.20 if min_n >= 5 else (0.12 if min_n >= 3 else 0.0)
+            m_weight = 1 - lg_weight
+            if lg_weight > 0:
+                real_total_s = h_lg['shots'] + a_lg['shots']
+                real_total_t = h_lg['shots_target'] + a_lg['shots_target']
+                real_total_c = h_lg['corners'] + a_lg['corners']
+                mu_s_pre = mu_s
+                mu_t_pre = mu_t
+                mu_s = m_weight * mu_s + lg_weight * real_total_s
+                mu_t = m_weight * mu_t + lg_weight * real_total_t
+                mu_c = m_weight * mu_c + lg_weight * real_total_c
+                if has_separate_models:
+                    mu_hs_direct = m_weight * mu_hs_direct + lg_weight * h_lg['shots']
+                    mu_as_direct = m_weight * mu_as_direct + lg_weight * a_lg['shots']
+                    mu_hst_direct = m_weight * mu_hst_direct + lg_weight * h_lg['shots_target']
+                    mu_ast_direct = m_weight * mu_ast_direct + lg_weight * a_lg['shots_target']
+                print(f"\n[LIGA-ADJ] Ajuste {match_league} ({lg_weight:.0%} liga real, {m_weight:.0%} modelo):")
+                print(f"   Tiros: {mu_s_pre:.1f} \u2192 {mu_s:.1f} (Liga real: {real_total_s:.1f})")
+                print(f"   A puerta: {mu_t_pre:.1f} \u2192 {mu_t:.1f} (Liga real: {real_total_t:.1f})")
+                print(f"   Datos: {local} {h_lg['n']}p(H), {visitante} {a_lg['n']}p(A)")
+
     def get_p(mu, line): return (1 - poisson.cdf(line, mu)) * 100
 
     # 6. REPORTE VISUAL V2

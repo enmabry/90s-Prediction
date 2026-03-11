@@ -430,6 +430,41 @@ def get_cl_stats(df, team_name, as_home=True, exclude_opponent=None):
     }
 
 
+def get_league_role_stats(df, team_name, div, as_home=True, n_games=8, exclude_opponent=None):
+    """
+    Obtiene promedios REALES de un equipo en su liga doméstica por rol (home/away).
+    Útil para corregir el modelo cuando sus rolling features mezclan competiciones
+    (ej: Bayern tiene CL + Bundesliga en su rolling_ST, pero para un partido de
+    Bundesliga solo nos interesa el rendimiento en Bundesliga as away).
+
+    Returns:
+        dict: {'shots', 'shots_target', 'corners', 'n'} o None si no hay datos
+    """
+    div_data = df[df['Div'] == div]
+
+    if as_home:
+        team_div = div_data[div_data['HomeTeam'] == team_name]
+        if exclude_opponent:
+            team_div = team_div[team_div['AwayTeam'] != exclude_opponent]
+        shots_col, st_col, c_col = 'HS', 'HST', 'HC'
+    else:
+        team_div = div_data[div_data['AwayTeam'] == team_name]
+        if exclude_opponent:
+            team_div = team_div[team_div['HomeTeam'] != exclude_opponent]
+        shots_col, st_col, c_col = 'AS', 'AST', 'AC'
+
+    if team_div.empty:
+        return None
+
+    recent = team_div.sort_values('Date').tail(n_games)
+    return {
+        'shots': recent[shots_col].mean(),
+        'shots_target': recent[st_col].mean(),
+        'corners': recent[c_col].mean(),
+        'n': len(recent)
+    }
+
+
 def fill_missing_stats(row, df, team_name, as_home=True):
     """
     Rellena valores NaN con promedios REALES del equipo del dataset.
