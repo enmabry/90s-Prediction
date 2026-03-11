@@ -187,56 +187,49 @@ def train_dynamic_brain():
     m2.fit(X_tr_c, y_tr_c, sample_weight=w_tr_c)
     print(f"Corners MAE: {mean_absolute_error(y_te_c, m2.predict(X_te_c)):.2f}")
 
-    # 3. TIROS TOTALES (con features especializadas)
+    # 3. TIROS TOTALES
     y_shots = df['HS'] + df['AS']
-    X_train_s, X_test_s, y_train_s, y_test_s, w_train_s, _ = train_test_split(
-        X_shots, y_shots, sample_w, test_size=0.2, random_state=42) if sample_w is not None else (*train_test_split(X_shots, y_shots, test_size=0.2, random_state=42), None, None)
+    X_tr_s, X_te_s, y_tr_s, y_te_s, w_tr_s = split_w(X_shots, y_shots)
     m3 = xgb.XGBRegressor(**shots_params)
-    m3.fit(X_train_s, y_train_s, sample_weight=w_train_s)
-    print(f"Tiros Totales MAE: {mean_absolute_error(y_test_s, m3.predict(X_test_s)):.2f}")
+    m3.fit(X_tr_s, y_tr_s, sample_weight=w_tr_s)
+    print(f"Tiros Totales MAE: {mean_absolute_error(y_te_s, m3.predict(X_te_s)):.2f}")
 
-    # 4. TIROS A PUERTA TOTAL (con features especializadas)
+    # 4. TIROS A PUERTA TOTAL
     y_target = df['HST'] + df['AST']
-    X_train_t, X_test_t, y_train_t, y_test_t, w_train_t, _ = train_test_split(
-        X_shots, y_target, sample_w, test_size=0.2, random_state=42) if sample_w is not None else (*train_test_split(X_shots, y_target, test_size=0.2, random_state=42), None, None)
+    X_tr_t, X_te_t, y_tr_t, y_te_t, w_tr_t = split_w(X_shots, y_target)
     m4 = xgb.XGBRegressor(**shots_params)
-    m4.fit(X_train_t, y_train_t, sample_weight=w_train_t)
-    print(f"Tiros a Puerta MAE: {mean_absolute_error(y_test_t, m4.predict(X_test_t)):.2f}")
+    m4.fit(X_tr_t, y_tr_t, sample_weight=w_tr_t)
+    print(f"Tiros a Puerta MAE: {mean_absolute_error(y_te_t, m4.predict(X_te_t)):.2f}")
 
-    # ============ MEJORA #6: MODELOS SEPARADOS POR EQUIPO (HOME / AWAY) ============
-    # Predecir HS, AS, HST, AST directamente con features especializadas + pesos
+    # ============ MODELOS SEPARADOS POR EQUIPO (HOME / AWAY) ============
 
     # 5. TIROS LOCAL (HS)
     y_hs = df['HS']
-    X_train_hs, X_test_hs, y_train_hs, y_test_hs, w_train_hs, _ = train_test_split(
-        X_shots, y_hs, sample_w, test_size=0.2, random_state=42) if sample_w is not None else (*train_test_split(X_shots, y_hs, test_size=0.2, random_state=42), None, None)
+    X_tr_hs, X_te_hs, y_tr_hs, y_te_hs, w_tr_hs = split_w(X_shots, y_hs)
     m5 = xgb.XGBRegressor(**shots_params)
-    m5.fit(X_train_hs, y_train_hs, sample_weight=w_train_hs)
-    print(f"Tiros Local (HS) MAE: {mean_absolute_error(y_test_hs, m5.predict(X_test_hs)):.2f}")
+    m5.fit(X_tr_hs, y_tr_hs, sample_weight=w_tr_hs)
+    print(f"Tiros Local (HS) MAE: {mean_absolute_error(y_te_hs, m5.predict(X_te_hs)):.2f}")
 
     # 6. TIROS VISITANTE (AS)
     y_as = df['AS']
-    X_train_as, X_test_as, y_train_as, y_test_as, w_train_as, _ = train_test_split(
-        X_shots, y_as, sample_w, test_size=0.2, random_state=42) if sample_w is not None else (*train_test_split(X_shots, y_as, test_size=0.2, random_state=42), None, None)
+    X_tr_as, X_te_as, y_tr_as, y_te_as, w_tr_as = split_w(X_shots, y_as)
     m6 = xgb.XGBRegressor(**shots_params)
-    m6.fit(X_train_as, y_train_as, sample_weight=w_train_as)
-    print(f"Tiros Visitante (AS) MAE: {mean_absolute_error(y_test_as, m6.predict(X_test_as)):.2f}")
+    m6.fit(X_tr_as, y_tr_as, sample_weight=w_tr_as)
+    print(f"Tiros Visitante (AS) MAE: {mean_absolute_error(y_te_as, m6.predict(X_te_as)):.2f}")
 
-    # 7. TIROS A PUERTA LOCAL (HST) — modelo más importante para apuestas
+    # 7. TIROS A PUERTA LOCAL (HST)
     y_hst = df['HST']
-    X_train_hst, X_test_hst, y_train_hst, y_test_hst, w_train_hst, _ = train_test_split(
-        X_shots, y_hst, sample_w, test_size=0.2, random_state=42) if sample_w is not None else (*train_test_split(X_shots, y_hst, test_size=0.2, random_state=42), None, None)
+    X_tr_hst, X_te_hst, y_tr_hst, y_te_hst, w_tr_hst = split_w(X_shots, y_hst)
     m7 = xgb.XGBRegressor(**shots_params)
-    m7.fit(X_train_hst, y_train_hst, sample_weight=w_train_hst)
-    print(f"Tiros a Puerta Local (HST) MAE: {mean_absolute_error(y_test_hst, m7.predict(X_test_hst)):.2f}")
+    m7.fit(X_tr_hst, y_tr_hst, sample_weight=w_tr_hst)
+    print(f"Tiros a Puerta Local (HST) MAE: {mean_absolute_error(y_te_hst, m7.predict(X_te_hst)):.2f}")
 
-    # 8. TIROS A PUERTA VISITANTE (AST) — modelo más importante para apuestas
+    # 8. TIROS A PUERTA VISITANTE (AST)
     y_ast = df['AST']
-    X_train_ast, X_test_ast, y_train_ast, y_test_ast, w_train_ast, _ = train_test_split(
-        X_shots, y_ast, sample_w, test_size=0.2, random_state=42) if sample_w is not None else (*train_test_split(X_shots, y_ast, test_size=0.2, random_state=42), None, None)
+    X_tr_ast, X_te_ast, y_tr_ast, y_te_ast, w_tr_ast = split_w(X_shots, y_ast)
     m8 = xgb.XGBRegressor(**shots_params)
-    m8.fit(X_train_ast, y_train_ast, sample_weight=w_train_ast)
-    print(f"Tiros a Puerta Visitante (AST) MAE: {mean_absolute_error(y_test_ast, m8.predict(X_test_ast)):.2f}")
+    m8.fit(X_tr_ast, y_tr_ast, sample_weight=w_tr_ast)
+    print(f"Tiros a Puerta Visitante (AST) MAE: {mean_absolute_error(y_te_ast, m8.predict(X_te_ast)):.2f}")
 
     # Guardar todos los modelos
     os.makedirs('models', exist_ok=True)

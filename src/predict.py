@@ -119,7 +119,12 @@ def predict_final_boss(local=None, visitante=None, h=None, d=None, a=None, match
             # Fallback: detectar liga más común para los equipos
             h_matches = df[df['HomeTeam'] == local]
             a_matches = df[df['AwayTeam'] == visitante]
-            if not h_matches.empty:
+            # Si ambos equipos tienen partidos en CL, probablemente es CL
+            h_cl = df[(df['is_CL'] == 1) & ((df['HomeTeam'] == local) | (df['AwayTeam'] == local))]
+            a_cl = df[(df['is_CL'] == 1) & ((df['HomeTeam'] == visitante) | (df['AwayTeam'] == visitante))]
+            if len(h_cl) >= 2 and len(a_cl) >= 2:
+                match_league = 'CL'
+            elif not h_matches.empty:
                 match_league = h_matches['Div'].mode()[0]
         
         h_row = get_team_data_with_context(df, local, as_home=True, match_league=match_league)
@@ -426,19 +431,28 @@ def predict_final_boss(local=None, visitante=None, h=None, d=None, a=None, match
     prob_1x2 = np.clip(prob_1x2, 0.02, 0.95)
     prob_1x2 = prob_1x2 / prob_1x2.sum()
     
-    mu_c = m_corn.predict(X_in)[0]
-    mu_s = m_shots.predict(X_in)[0]
-    mu_t = m_target.predict(X_in)[0]
+    # Construir X_shots_in con las features propias de los modelos de tiros
+    # (entrenados con shots_priority + nuevas features SoT Rate)
+    shots_model_features = m_corn.feature_names_in_
+    shots_ext = dict(input_dict)  # copiar features base
+    for col in shots_model_features:
+        if col not in shots_ext:
+            if '_Home' in col:
+                shots_ext[col] = safe_get(h_row, col, 0.0)
+            elif '_Away' in col:
+                shots_ext[col] = safe_get(a_row, col, 0.0)
+            else:
+                shots_ext[col] = safe_get(h_row, col, 0.0)
+    X_shots_in = pd.DataFrame([shots_ext])[shots_model_features].fillna(0)
+
+    mu_c = m_corn.predict(X_shots_in)[0]
+    mu_s = m_shots.predict(X_shots_in)[0]
+    mu_t = m_target.predict(X_shots_in)[0]
     
-    # MEJORA #6: Modelos separados para HS/AS/HST/AST
-    # Predicen directamente los tiros de cada equipo (no total+share)
+    # Modelos separados para HS/AS/HST/AST
     if has_separate_models:
-        # Crear X_in compatible con modelos separados
         sep_features = m_hs.feature_names_in_
-        sep_dict = {}
-        for col in sep_features:
-            sep_dict[col] = input_dict.get(col, 0.0)
-        X_sep = pd.DataFrame([sep_dict])[sep_features].fillna(0)
+        X_sep = pd.DataFrame([shots_ext])[sep_features].fillna(0)
         
         mu_hs_direct = m_hs.predict(X_sep)[0]
         mu_as_direct = m_as.predict(X_sep)[0]
@@ -635,6 +649,7 @@ if __name__ == "__main__":
         h = float(sys.argv[3]) if len(sys.argv) > 3 else None
         d = float(sys.argv[4]) if len(sys.argv) > 4 else None
         a = float(sys.argv[5]) if len(sys.argv) > 5 else None
-        predict_final_boss(local, visitante, h, d, a)
+        league = sys.argv[6].upper() if len(sys.argv) > 6 else None
+        predict_final_boss(local, visitante, h, d, a, match_league=league)
     else:
         predict_final_boss()
