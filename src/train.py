@@ -108,9 +108,8 @@ def train_dynamic_brain():
     
     X = df[features]
 
-    # --- CONFIGURACIÓN DEL MODELO ---
+    # --- CONFIGURACIÓN: MODELO RESULTADO (clasificación) ---
     # Regularizado para evitar sobreajuste a calidad histórica (Position/H2H)
-    # max_depth=4 (+reg) → árboles más simples, predicciones menos extremas
     model_params = {
         'n_estimators': 200,
         'learning_rate': 0.05,
@@ -118,60 +117,125 @@ def train_dynamic_brain():
         'min_child_weight': 5,
         'subsample': 0.8,
         'colsample_bytree': 0.7,
-        'reg_alpha': 0.1,       # L1: fuerza esparsidad (ignora features débiles)
-        'reg_lambda': 2.0,      # L2: penaliza pesos extremos
+        'reg_alpha': 0.1,
+        'reg_lambda': 2.0,
         'random_state': 42
     }
 
-    # 1. RESULTADO (1X2)
+    # --- CONFIGURACIÓN: MODELOS DE TIROS (regresión especializada) ---
+    # Más profundidad y estimadores para capturar patrones no lineales de tiros
+    # Menos regularización porque los tiros son más predecibles que el resultado
+    shots_params = {
+        'n_estimators': 400,
+        'learning_rate': 0.04,
+        'max_depth': 6,
+        'min_child_weight': 3,
+        'subsample': 0.85,
+        'colsample_bytree': 0.8,
+        'reg_alpha': 0.05,
+        'reg_lambda': 1.0,
+        'random_state': 42
+    }
+
+    # --- FEATURES ESPECIALIZADAS PARA MODELOS DE TIROS ---
+    # Prioriza features de volumen/precisión de tiros, ignora mercado/H2H
+    shots_priority = [
+        c for c in features if any(kw in c for kw in [
+            'rolling_S_', 'rolling_ST_', 'rolling_OppS_', 'rolling_OppST_',
+            'EWM_Shots', 'EWM_Shots_Target', 'EWM_SoT_Rate', 'EWM_OppST',
+            'EWM_OppSoT_Rate', 'EWM_S_Fast', 'EWM_ST_Fast',
+            'slope_S_', 'slope_ST_',
+            'Shot_Accuracy', 'Shooting_Volume', 'Shot_Consistency',
+            'Direct_SoT', 'Cross_SoT', 'SoT_Expectancy', 'SoT_Dominance',
+            'Conceded_SoT', 'Fast_SoT', 'Fast_Shots',
+            'Expected_Shots', 'Expected_ST', 'Match_Shot_Expectancy',
+            'Shot_Advantage', 'Attacking_Momentum', 'Pressure_Index',
+            'Offensive_Index', 'Aggression_Score', 'Permissiveness',
+            'Defensive_Vulnerability', 'Defense_Efficiency',
+            'Attacking_vs_', 'With_Possession', 'Possession_EWM',
+            'Home_Advantage_Factor', 'Home_Advantage_Target',
+            'diff_Shots', 'exp_Total_Shots', 'Shot_Share',
+            'rest_days', 'is_CL', 'is_E0', 'is_SP1', 'is_D1', 'is_I1',
+            'opponent_position', 'opponent_points',
+        ])
+    ]
+    shots_priority = list(set(shots_priority))
+    # Pesos de recencia: más peso a partidos recientes para modelos de tiros
+    sample_w = df['temporal_weight'].values if 'temporal_weight' in df.columns else None
+
+    def split_w(X_data, y_data):
+        """Split con pesos temporales si están disponibles"""
+        if sample_w is not None:
+            splits = train_test_split(X_data, y_data, sample_w, test_size=0.2, random_state=42)
+            return splits[0], splits[1], splits[2], splits[3], splits[4]
+        splits = train_test_split(X_data, y_data, test_size=0.2, random_state=42)
+        return splits[0], splits[1], splits[2], splits[3], None
+
+    # 1. RESULTADO (1X2) — usa features generales, sin pesos (clasificación)
     y_res = df['FTR'].map({'H': 0, 'D': 1, 'A': 2})
     X_train, X_test, y_train, y_test = train_test_split(X, y_res, test_size=0.2, random_state=42)
     m1 = xgb.XGBClassifier(**model_params).fit(X_train, y_train)
     print(f"1X2 Precisión: {accuracy_score(y_test, m1.predict(X_test))*100:.2f}%")
 
-    # 2. CORNERS DINÁMICOS
-    y_corn = df['HC'] + df['AC']
-    X_train_c, X_test_c, y_train_c, y_test_c = train_test_split(X, y_corn, test_size=0.2, random_state=42)
-    m2 = xgb.XGBRegressor(**model_params).fit(X_train_c, y_train_c)
-    print(f"Corners MAE: {mean_absolute_error(y_test_c, m2.predict(X_test_c)):.2f}")
+    # Dataset especializado para modelos de tiros
+    X_shots = df[shots_priority] if shots_priority else X
 
-    # 3. TIROS TOTALES
+    # 2. CORNERS DINÁMICOS (features especializadas + pesos temporales)
+    y_corn = df['HC'] + df['AC']
+    X_tr_c, X_te_c, y_tr_c, y_te_c, w_tr_c = split_w(X_shots, y_corn)
+    m2 = xgb.XGBRegressor(**shots_params)
+    m2.fit(X_tr_c, y_tr_c, sample_weight=w_tr_c)
+    print(f"Corners MAE: {mean_absolute_error(y_te_c, m2.predict(X_te_c)):.2f}")
+
+    # 3. TIROS TOTALES (con features especializadas)
     y_shots = df['HS'] + df['AS']
-    X_train_s, X_test_s, y_train_s, y_test_s = train_test_split(X, y_shots, test_size=0.2, random_state=42)
-    m3 = xgb.XGBRegressor(**model_params).fit(X_train_s, y_train_s)
+    X_train_s, X_test_s, y_train_s, y_test_s, w_train_s, _ = train_test_split(
+        X_shots, y_shots, sample_w, test_size=0.2, random_state=42) if sample_w is not None else (*train_test_split(X_shots, y_shots, test_size=0.2, random_state=42), None, None)
+    m3 = xgb.XGBRegressor(**shots_params)
+    m3.fit(X_train_s, y_train_s, sample_weight=w_train_s)
     print(f"Tiros Totales MAE: {mean_absolute_error(y_test_s, m3.predict(X_test_s)):.2f}")
 
-    # 4. TIROS A PUERTA
+    # 4. TIROS A PUERTA TOTAL (con features especializadas)
     y_target = df['HST'] + df['AST']
-    X_train_t, X_test_t, y_train_t, y_test_t = train_test_split(X, y_target, test_size=0.2, random_state=42)
-    m4 = xgb.XGBRegressor(**model_params).fit(X_train_t, y_train_t)
+    X_train_t, X_test_t, y_train_t, y_test_t, w_train_t, _ = train_test_split(
+        X_shots, y_target, sample_w, test_size=0.2, random_state=42) if sample_w is not None else (*train_test_split(X_shots, y_target, test_size=0.2, random_state=42), None, None)
+    m4 = xgb.XGBRegressor(**shots_params)
+    m4.fit(X_train_t, y_train_t, sample_weight=w_train_t)
     print(f"Tiros a Puerta MAE: {mean_absolute_error(y_test_t, m4.predict(X_test_t)):.2f}")
 
     # ============ MEJORA #6: MODELOS SEPARADOS POR EQUIPO (HOME / AWAY) ============
-    # En vez de predecir HS+AS y repartir con share, predecir cada uno directamente
-    
+    # Predecir HS, AS, HST, AST directamente con features especializadas + pesos
+
     # 5. TIROS LOCAL (HS)
     y_hs = df['HS']
-    X_train_hs, X_test_hs, y_train_hs, y_test_hs = train_test_split(X, y_hs, test_size=0.2, random_state=42)
-    m5 = xgb.XGBRegressor(**model_params).fit(X_train_hs, y_train_hs)
+    X_train_hs, X_test_hs, y_train_hs, y_test_hs, w_train_hs, _ = train_test_split(
+        X_shots, y_hs, sample_w, test_size=0.2, random_state=42) if sample_w is not None else (*train_test_split(X_shots, y_hs, test_size=0.2, random_state=42), None, None)
+    m5 = xgb.XGBRegressor(**shots_params)
+    m5.fit(X_train_hs, y_train_hs, sample_weight=w_train_hs)
     print(f"Tiros Local (HS) MAE: {mean_absolute_error(y_test_hs, m5.predict(X_test_hs)):.2f}")
-    
+
     # 6. TIROS VISITANTE (AS)
     y_as = df['AS']
-    X_train_as, X_test_as, y_train_as, y_test_as = train_test_split(X, y_as, test_size=0.2, random_state=42)
-    m6 = xgb.XGBRegressor(**model_params).fit(X_train_as, y_train_as)
+    X_train_as, X_test_as, y_train_as, y_test_as, w_train_as, _ = train_test_split(
+        X_shots, y_as, sample_w, test_size=0.2, random_state=42) if sample_w is not None else (*train_test_split(X_shots, y_as, test_size=0.2, random_state=42), None, None)
+    m6 = xgb.XGBRegressor(**shots_params)
+    m6.fit(X_train_as, y_train_as, sample_weight=w_train_as)
     print(f"Tiros Visitante (AS) MAE: {mean_absolute_error(y_test_as, m6.predict(X_test_as)):.2f}")
-    
-    # 7. TIROS A PUERTA LOCAL (HST)
+
+    # 7. TIROS A PUERTA LOCAL (HST) — modelo más importante para apuestas
     y_hst = df['HST']
-    X_train_hst, X_test_hst, y_train_hst, y_test_hst = train_test_split(X, y_hst, test_size=0.2, random_state=42)
-    m7 = xgb.XGBRegressor(**model_params).fit(X_train_hst, y_train_hst)
+    X_train_hst, X_test_hst, y_train_hst, y_test_hst, w_train_hst, _ = train_test_split(
+        X_shots, y_hst, sample_w, test_size=0.2, random_state=42) if sample_w is not None else (*train_test_split(X_shots, y_hst, test_size=0.2, random_state=42), None, None)
+    m7 = xgb.XGBRegressor(**shots_params)
+    m7.fit(X_train_hst, y_train_hst, sample_weight=w_train_hst)
     print(f"Tiros a Puerta Local (HST) MAE: {mean_absolute_error(y_test_hst, m7.predict(X_test_hst)):.2f}")
-    
-    # 8. TIROS A PUERTA VISITANTE (AST)
+
+    # 8. TIROS A PUERTA VISITANTE (AST) — modelo más importante para apuestas
     y_ast = df['AST']
-    X_train_ast, X_test_ast, y_train_ast, y_test_ast = train_test_split(X, y_ast, test_size=0.2, random_state=42)
-    m8 = xgb.XGBRegressor(**model_params).fit(X_train_ast, y_train_ast)
+    X_train_ast, X_test_ast, y_train_ast, y_test_ast, w_train_ast, _ = train_test_split(
+        X_shots, y_ast, sample_w, test_size=0.2, random_state=42) if sample_w is not None else (*train_test_split(X_shots, y_ast, test_size=0.2, random_state=42), None, None)
+    m8 = xgb.XGBRegressor(**shots_params)
+    m8.fit(X_train_ast, y_train_ast, sample_weight=w_train_ast)
     print(f"Tiros a Puerta Visitante (AST) MAE: {mean_absolute_error(y_test_ast, m8.predict(X_test_ast)):.2f}")
 
     # Guardar todos los modelos

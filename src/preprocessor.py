@@ -284,6 +284,30 @@ def get_rolling_stats(df, n_games=5):
         lambda x: x.ewm(alpha=0.3, adjust=False).mean().shift(1)
     )
 
+    # ============ MEJORA SHOTS: SoT RATE + CONCEDED SoT POR ROL ============
+    # SoT_Rate: ratio histórico de tiros a puerta / tiros totales del equipo
+    # CLAVE: captura la PRECISIÓN del equipo (no solo el volumen)
+    combined['SoT_Rate'] = combined['ST'] / (combined['S'] + 0.1)
+    combined['EWM_SoT_Rate'] = combined.groupby(['Team', 'IsHome'])['SoT_Rate'].transform(
+        lambda x: x.ewm(span=n_games, adjust=False).mean().shift(1)
+    )
+    # Tiros a puerta CONCEDIDOS por el equipo (qué tan peligrosos son los rivales)
+    combined['EWM_OppST_Role'] = combined.groupby(['Team', 'IsHome'])['OppST'].transform(
+        lambda x: x.ewm(span=n_games, adjust=False).mean().shift(1)
+    )
+    # Ratio OppSoT: conversión de tiros→puerta que PERMITEN al rival
+    combined['OppSoT_Rate'] = combined['OppST'] / (combined['OppS'] + 0.1)
+    combined['EWM_OppSoT_Rate'] = combined.groupby(['Team', 'IsHome'])['OppSoT_Rate'].transform(
+        lambda x: x.ewm(span=n_games, adjust=False).mean().shift(1)
+    )
+    # EWM de tiros totales propios (alpha=0.4 para CL donde cada partido pesa más)
+    combined['EWM_S_Fast'] = combined.groupby(['Team', 'IsHome'])['S'].transform(
+        lambda x: x.ewm(alpha=0.4, adjust=False).mean().shift(1)
+    )
+    combined['EWM_ST_Fast'] = combined.groupby(['Team', 'IsHome'])['ST'].transform(
+        lambda x: x.ewm(alpha=0.4, adjust=False).mean().shift(1)
+    )
+
     # ============ MEJORA #3: TENDENCIA DE TIROS (SLOPE) ============
     # Detecta si un equipo dispara cada vez más o menos en sus últimos partidos
     # Slope positivo = tendencia al alza, negativo = a la baja
@@ -661,7 +685,44 @@ def get_rolling_stats(df, n_games=5):
             df.loc[poss_away_real, 'Expected_Shots_Away_V2'] *
             (1 + (df.loc[poss_away_real, 'rolling_Poss_Away'] - 50) / 100)
         )
-    
+
+    # ============ MEJORA SHOTS #4: ESTIMACIONES DIRECTAS SoT ============
+    # Predicción directa de remates a puerta usando precisión por rol
+    # Direct_SoT = tiros_esperados_por_rol × tasa_precision_historica
+    df['Direct_SoT_Home'] = (
+        df[f'rolling_S_{n_games}_Role_Home'] * df['EWM_SoT_Rate_Home']
+    ).fillna(df[f'rolling_ST_{n_games}_Role_Home'])
+    df['Direct_SoT_Away'] = (
+        df[f'rolling_S_{n_games}_Role_Away'] * df['EWM_SoT_Rate_Away']
+    ).fillna(df[f'rolling_ST_{n_games}_Role_Away'])
+
+    # SoT esperados contra el RIVAL ACTUAL (cruce ofensiva × permisividad defensiva rival)
+    # ¿Cuántos SoT deja pasar el rival? × ¿Cuántos tiros produzco yo?
+    df['Cross_SoT_Home'] = (
+        df[f'rolling_S_{n_games}_Role_Home'] * df['EWM_OppSoT_Rate_Away']
+    ).fillna(df['Direct_SoT_Home'])
+    df['Cross_SoT_Away'] = (
+        df[f'rolling_S_{n_games}_Role_Away'] * df['EWM_OppSoT_Rate_Home']
+    ).fillna(df['Direct_SoT_Away'])
+
+    # Estimación SoT final: promedio de ambas perspectivas (propio + rival)
+    df['SoT_Expectancy_Home'] = (df['Direct_SoT_Home'] * 0.6 + df['Cross_SoT_Home'] * 0.4)
+    df['SoT_Expectancy_Away'] = (df['Direct_SoT_Away'] * 0.6 + df['Cross_SoT_Away'] * 0.4)
+
+    # SoT concedidos esperados: qué tantos SoT recibirá cada equipo
+    df['Conceded_SoT_Home'] = df['EWM_OppST_Role_Home']
+    df['Conceded_SoT_Away'] = df['EWM_OppST_Role_Away']
+
+    # Ratio SoT propios vs concedidos (>1 = equipo domina; <1 = equipo es dominado)
+    df['SoT_Dominance_Home'] = df['SoT_Expectancy_Home'] / (df['Conceded_SoT_Home'] + 0.1)
+    df['SoT_Dominance_Away'] = df['SoT_Expectancy_Away'] / (df['Conceded_SoT_Away'] + 0.1)
+
+    # Fast EWM cruzado (respuesta rápida para cambios de forma reciente)
+    df['Fast_SoT_Home'] = df['EWM_ST_Fast_Home']
+    df['Fast_SoT_Away'] = df['EWM_ST_Fast_Away']
+    df['Fast_Shots_Home'] = df['EWM_S_Fast_Home']
+    df['Fast_Shots_Away'] = df['EWM_S_Fast_Away']
+
     return df
 
 if __name__ == "__main__":

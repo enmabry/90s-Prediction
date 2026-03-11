@@ -560,13 +560,15 @@ def predict_final_boss(local=None, visitante=None, h=None, d=None, a=None, match
             """Mezcla inteligente: usa separado solo si es razonable"""
             if total_val <= 0:
                 return sep_val
-            ratio = sep_val / total_val if total_val > 0 else 1
-            # Si el separado diverge más de 40% del total, ignorarlo
-            if ratio < 0.6 or ratio > 1.4:
+            if sep_val <= 0:
                 return total_val
-            # CL: 75% total + 25% separado (total tiene mejor CL-ADJ)
-            # Doméstica: 50% total + 50% separado
-            w_sep = 0.25 if is_cl else 0.50
+            ratio = sep_val / total_val
+            # Si el separado diverge más de 50% del total, ignorarlo
+            if ratio < 0.50 or ratio > 1.50:
+                return total_val
+            # CL con ajuste real: 55% total (ya tiene CL-ADJ) + 45% separado
+            # Doméstica: 40% total + 60% separado (separados son más precisos por rol)
+            w_sep = 0.45 if is_cl else 0.60
             return (1 - w_sep) * total_val + w_sep * sep_val
         
         is_cl = match_league == 'CL'
